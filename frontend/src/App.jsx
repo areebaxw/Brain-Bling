@@ -86,6 +86,12 @@ export default function BrainBlingTemplate() {
     { id: "D", text: "Mina answered questions without reading the passage" },
   ]);
   const [correctAnswer, setCorrectAnswer] = useState("B");
+  const [inferenceTimes, setInferenceTimes] = useState({
+    verification: 0,
+    distractor: 0,
+    hint: 0,
+    total: 0,
+  });
 
   useEffect(() => {
     fetch("http://localhost:5000/metrics")
@@ -111,37 +117,178 @@ export default function BrainBlingTemplate() {
   async function handleLoadSample() {
     setMessage("Loading random sample from dataset...");
     try {
-      const res = await fetch("http://localhost:5000/api/sample-article");
+      const res = await fetch("http://localhost:5000/api/sample-article?" + Date.now(), {
+        headers: { 
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache"
+        }
+      });
       const data = await res.json();
+      
+      // RESET ALL QUIZ STATE to prevent caching issues
       setArticle(data.article);
-      setQuestion(data.question);
-      setOptions(data.options);
-      setCorrectAnswer(data.correct_answer);
+      setQuestion("What is the main idea of the passage?");
+      setOptions([
+        { id: "A", text: "" },
+        { id: "B", text: "" },
+        { id: "C", text: "" },
+        { id: "D", text: "" }
+      ]);
+      setCorrectAnswer("");
       setSelected("");
       setChecked(false);
-      setMessage("Random RACE sample loaded from dataset.");
+      setMessage("Random RACE sample loaded. Click 'Submit Article' to generate quiz with distractors.");
+      
+      // Clear any cached hints
+      window.currentHints = null;
+      
+      // Reset inference times
+      setInferenceTimes({
+        verification: 0,
+        distractor: 0,
+        hint: 0,
+        total: 0,
+      });
+      
+      console.log("ALL QUIZ STATE RESET - New sample loaded:", data.article.substring(0, 100));
     } catch {
       setMessage("API unavailable. Please start the backend server.");
     }
   }
 
-  function handleSubmitArticle() {
+  async function handleSubmitArticle() {
     if (!article.trim()) {
       setMessage("Please paste an article first.");
       return;
     }
     setSelected("");
     setChecked(false);
-    setScreen("quiz");
+    setMessage("Generating quiz with distractors...");
+    
+    const start = performance.now();
+    console.log("Starting article submission at:", start);
+    try {
+      // Check if this is a RACE sample by calling the sample API to get current sample
+      console.log("Getting current RACE sample...");
+      const sampleRes = await fetch("http://localhost:5000/api/sample-article?" + Date.now(), {
+        headers: { 
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache"
+        }
+      });
+      const sampleData = await sampleRes.json();
+      
+      // Check if current article matches the sample (simple check)
+      const isRaceSample = article.trim() === sampleData.article.trim();
+      
+      let quizData;
+      if (isRaceSample) {
+        console.log("RACE sample detected, calling generate-race-quiz API...");
+        // Use RACE quiz workflow: keep original correct answer, replace 3 wrong with distractors
+        const raceQuizRes = await fetch("http://localhost:5000/api/generate-race-quiz?" + Date.now(), {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache"
+          },
+          body: JSON.stringify({ 
+            article: sampleData.article,
+            question: sampleData.question,
+            options: [sampleData.A.text, sampleData.B.text, sampleData.C.text, sampleData.D.text],
+            correct_answer: sampleData.correct_answer
+          })
+        });
+        quizData = await raceQuizRes.json();
+        console.log("RACE quiz API response received - FRESH CALL");
+      } else {
+        console.log("Manual article detected, calling generate-quiz API...");
+        // Use manual article workflow: generate question + 1 correct + 3 distractors
+        const quizRes = await fetch("http://localhost:5000/api/generate-quiz", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ article })
+        });
+        quizData = await quizRes.json();
+        console.log("Quiz API response received");
+      }
+      
+      console.log("Quiz data received:", quizData);
+      console.log("Correct answer from API:", quizData.correct_answer);
+      setQuestion(quizData.question);
+      setOptions(quizData.options.map((opt, i) => ({ id: String.fromCharCode(65 + i), text: opt })));
+      setCorrectAnswer(quizData.correct_answer);
+      console.log("Set correctAnswer to:", quizData.correct_answer);
+      setScreen("quiz");
+      setMessage(isRaceSample ? 
+        "RACE quiz generated: kept original correct answer, replaced 3 wrong with distractors." :
+        "Quiz generated with 1 correct option and 3 distractors."
+      );
+    } catch (error) {
+      console.error("Error generating quiz:", error);
+      setScreen("quiz");
+      setMessage("API unavailable. Using fallback content.");
+    }
+    const end = performance.now();
+    const distractorTime = Math.round(end - start);
+    console.log("Quiz generation time measured:", distractorTime, "ms");
+    setInferenceTimes(prev => ({
+      ...prev,
+      distractor: distractorTime,
+      total: prev.verification + distractorTime + prev.hint,
+    }));
   }
 
-  function handleCheckAnswer() {
+  async function handleCheckAnswer() {
     if (!selected) {
       setMessage("Please select one option before checking.");
       return;
     }
-    setChecked(true);
-    setMessage("Model A verifier checked your selected answer.");
+    
+    // Ensure correctAnswer is set
+    if (!correctAnswer) {
+      console.error("correctAnswer is undefined, cannot proceed");
+      setMessage("Error: Correct answer not set. Please generate a quiz first.");
+      return;
+    }
+    
+    console.log("Checking answer - selected:", selected, "correct:", correctAnswer);
+    
+    const start = performance.now();
+    console.log("Starting answer verification at:", start);
+    try {
+      console.log("Calling check-answer API...");
+      const res = await fetch("http://localhost:5000/api/check-answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          article,
+          question,
+          selected_option: selected,
+          options: options.map(o => o.text),
+          correct_answer: correctAnswer
+        })
+      });
+      const data = await res.json();
+      console.log("Check-answer API response received:", data);
+      console.log("Correct answer from check-answer API:", data.correct_answer);
+      setChecked(true);
+      setMessage(`Model A verifier: ${data.explanation}`);
+      setCorrectAnswer(data.correct_answer);
+      console.log("Updated correctAnswer to:", data.correct_answer);
+    } catch (error) {
+      console.error("Error checking answer:", error);
+      setChecked(true);
+      setMessage("API unavailable. Using local verification.");
+    }
+    const end = performance.now();
+    const verificationTime = Math.round(end - start);
+    console.log("Verification time measured:", verificationTime, "ms");
+    setInferenceTimes(prev => ({
+      ...prev,
+      verification: verificationTime,
+      total: verificationTime + prev.distractor + prev.hint,
+    }));
   }
 
   const steps = ["landing", "input", "quiz", "dashboard"];
@@ -266,7 +413,38 @@ export default function BrainBlingTemplate() {
               <div className="flex items-center justify-between">
                 <p className="text-xl font-black">Question generated by Model A</p>
                 <button
-                  onClick={() => setShowHintPopup(true)}
+                  onClick={async () => {
+                    const start = performance.now();
+                    console.log("Starting hint generation at:", start);
+                    try {
+                      console.log("Calling hint API...");
+                      const hintRes = await fetch("http://localhost:5000/api/generate-hints", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ article, question, options: options.map(o => o.text) })
+                      });
+                      const hintData = await hintRes.json();
+                      console.log("Hint API response received");
+                      // Store hints for display in popup
+                      window.currentHints = hintData.hints;
+                    } catch (error) {
+                      console.error("Error generating hints:", error);
+                      window.currentHints = [
+                        "Hint 1: Look for key information in the passage",
+                        "Hint 2: Focus on the main topic",
+                        "Hint 3: Consider the context"
+                      ];
+                    }
+                    const end = performance.now();
+                    const hintTime = Math.round(end - start);
+                    console.log("Hint time measured:", hintTime, "ms");
+                    setInferenceTimes(prev => ({
+                      ...prev,
+                      hint: hintTime,
+                      total: prev.verification + prev.distractor + hintTime,
+                    }));
+                    setShowHintPopup(true);
+                  }}
                   className="border-2 border-black bg-[#ffc736] p-2 shadow-[2px_2px_0px_#000] hover:shadow-[3px_3px_0px_#000] transition"
                   aria-label="Show hints"
                 >
@@ -336,23 +514,21 @@ export default function BrainBlingTemplate() {
               </div>
               <div className="p-6">
                 <div className="grid gap-4 md:grid-cols-3">
-                  <div className="border-2 border-black bg-white p-4 shadow-[4px_4px_0px_#000]">
-                    <h3 className="text-xl font-black">Hint 1</h3>
-                    <p>Look for the repeated learning action in the passage.</p>
-                  </div>
-                  <div className="border-2 border-black bg-[#ffc736] p-4 shadow-[4px_4px_0px_#000]">
-                    <h3 className="text-xl font-black">Hint 2</h3>
-                    <p>The passage focuses on reading practice before a competition.</p>
-                  </div>
-                  <div className="border-2 border-black bg-white p-4 shadow-[4px_4px_0px_#000]">
-                    <h3 className="text-xl font-black">Hint 3</h3>
-                    <p>The best option mentions improvement through reading comprehension practice.</p>
-                  </div>
+                  {(window.currentHints || [
+                    "Hint 1: Look for key information in the passage",
+                    "Hint 2: Focus on the main topic",
+                    "Hint 3: Consider the context"
+                  ]).map((hint, i) => (
+                    <div key={i} className={`border-2 border-black ${i % 2 === 1 ? "bg-[#ffc736]" : "bg-white"} p-4 shadow-[4px_4px_0px_#000]`}>
+                      <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                      <p>{hint}</p>
+                    </div>
+                  ))}
                 </div>
-                <button className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000]">
-                  Reveal Answer
-                </button>
               </div>
+              <button className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000]">
+                Reveal Answer
+              </button>
             </div>
           </div>
         )}
@@ -368,6 +544,21 @@ export default function BrainBlingTemplate() {
     const bestAccuracy = allModels.length ? Math.max(...allModels.map((m) => m.Accuracy)).toFixed(4) : "-";
     const bestF1 = allModels.length ? Math.max(...allModels.map((m) => m["Macro F1"])).toFixed(4) : "-";
     const bestAUC = allModels.length ? Math.max(...allModels.map((m) => m["ROC-AUC"])).toFixed(4) : "-";
+
+    function getPerformanceBadge(models, current) {
+      const accs = models.map((m) => Number(m.Accuracy));
+      const max = Math.max(...accs);
+      const min = Math.min(...accs);
+      const avg = accs.reduce((a, b) => a + b, 0) / accs.length;
+      const acc = Number(current.Accuracy);
+      if (acc === max)
+        return <span className="inline-block border-2 border-black bg-[#22c55e] px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]">Best</span>;
+      if (acc >= avg)
+        return <span className="inline-block border-2 border-black bg-[#ffc736] px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]">Good</span>;
+      if (acc === min)
+        return <span className="inline-block border-2 border-black bg-[#ff4d00] px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]">Weak</span>;
+      return <span className="inline-block border-2 border-black bg-[#ff8bd8] px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]">Fair</span>;
+    }
 
     return (
       <div className="h-screen flex flex-col bg-[#7cf5d2] font-sans text-black overflow-hidden">
@@ -407,6 +598,21 @@ export default function BrainBlingTemplate() {
                 ))}
               </div>
 
+              <h3 className="text-xl font-black mb-2">Session Inference Times</h3>
+              <div className="grid gap-4 md:grid-cols-4 mb-6">
+                {[
+                  ["Verification", `${inferenceTimes.verification}ms`, "bg-[#ff8bd8]"],
+                  ["Distractor", `${inferenceTimes.distractor}ms`, "bg-[#ffc736]"],
+                  ["Hint", `${inferenceTimes.hint}ms`, "bg-[#7cf5d2]"],
+                  ["Total", `${inferenceTimes.total}ms`, "bg-[#bd83dd]"],
+                ].map(([label, value, bgColor]) => (
+                  <div key={label} className={`border-2 border-black ${bgColor} p-5 text-center shadow-[4px_4px_0px_#000]`}>
+                    <p className="text-sm font-black">{label}</p>
+                    <p className="mt-2 text-3xl font-black">{value}</p>
+                  </div>
+                ))}
+              </div>
+
               <h3 className="text-xl font-black mb-2">Base Models</h3>
               <div className="overflow-x-auto border-2 border-black mb-6">
                 <table className="w-full bg-[#ffc736] text-left text-sm">
@@ -418,6 +624,7 @@ export default function BrainBlingTemplate() {
                       <th className="p-3 font-black">Recall</th>
                       <th className="p-3 font-black">Macro F1</th>
                       <th className="p-3 font-black">ROC-AUC</th>
+                      <th className="p-3 font-black">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -429,6 +636,7 @@ export default function BrainBlingTemplate() {
                         <td className="p-3">{Number(m.Recall).toFixed(4)}</td>
                         <td className="p-3">{Number(m["Macro F1"]).toFixed(4)}</td>
                         <td className="p-3">{Number(m["ROC-AUC"]).toFixed(4)}</td>
+                        <td className="p-3">{getPerformanceBadge(metrics.binary_metrics, m)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -446,6 +654,7 @@ export default function BrainBlingTemplate() {
                       <th className="p-3 font-black">Recall</th>
                       <th className="p-3 font-black">Macro F1</th>
                       <th className="p-3 font-black">ROC-AUC</th>
+                      <th className="p-3 font-black">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -457,6 +666,7 @@ export default function BrainBlingTemplate() {
                         <td className="p-3">{Number(m.Recall).toFixed(4)}</td>
                         <td className="p-3">{Number(m["Macro F1"]).toFixed(4)}</td>
                         <td className="p-3">{Number(m["ROC-AUC"]).toFixed(4)}</td>
+                        <td className="p-3">{getPerformanceBadge(metrics.ensemble_metrics, m)}</td>
                       </tr>
                     ))}
                   </tbody>
