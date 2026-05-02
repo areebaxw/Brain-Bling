@@ -1,459 +1,387 @@
 """
-PHASE 4 - MODEL A: UNSUPERVISED/SEMI-SUPERVISED LEARNING
-==========================================================================================================
+PHASE 4 - MODEL A: UNSUPERVISED & SEMI-SUPERVISED LEARNING
+===========================================================
+Implements:
+- K-Means Clustering
+- Gaussian Mixture Models (GMM)
+- Label Propagation (Semi-Supervised)
 
-Implements unsupervised clustering and semi-supervised learning approaches for the RACE dataset.
-
-Algorithms:
-1. K-Means Clustering (k=2 for binary, k=4 for multi-class) - OPTIMIZED for speed
-2. Gaussian Mixture Models (GMM with k=2 and k=4)
-3. Label Spreading (semi-supervised, faster than Label Propagation)
-
-Evaluation Metrics:
-- Clustering quality: Silhouette Score, Davies-Bouldin Index, Calinski-Harabasz Index
-- Classification accuracy: NMI (Normalized Mutual Information), ARI (Adjusted Rand Index)
-
-Dataset: Combined One-Hot (5000 dims) + Lexical Features (6 dims) = 5006 total features
-Sample size: 20,000 binary samples from 5,000 questions (5000 train per split)
+Evaluation:
+- Clustering Purity
+- Silhouette Score
+- Semi-Supervised F1
+- Comparison table vs supervised baselines
 """
 
 import numpy as np
 import pandas as pd
 import pickle
-import warnings
-from pathlib import Path
+import os
 import scipy.sparse as sp
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
 from sklearn.mixture import GaussianMixture
-from sklearn.semi_supervised import LabelSpreading
+from sklearn.semi_supervised import LabelPropagation, LabelSpreading
 from sklearn.metrics import (
-    silhouette_score, davies_bouldin_score, calinski_harabasz_score,
-    normalized_mutual_info_score, accuracy_score, f1_score, adjusted_rand_score
+    accuracy_score, f1_score, silhouette_score,
+    classification_report
 )
-
+from sklearn.decomposition import TruncatedSVD
+from sklearn.preprocessing import normalize
+import warnings
 warnings.filterwarnings('ignore')
 
-# =================================================================================================
-# DATA LOADING
-# =================================================================================================
 
-def load_preprocessed_data():
-    """Load all preprocessed features and labels"""
-    print("[LOADING DATA]")
+# ============================================================================
+# 1. LOAD DATA
+# ============================================================================
+
+def load_data(processed_dir):
+    print("\n[LOADING DATA]")
     print("=" * 80)
-    
-    data_dir = Path("data/processed")
-    
-    # Load sparse feature matrices
-    print("Loading feature matrices...")
-    X_train_onehot = sp.load_npz(data_dir / "X_train_onehot.npz")
-    X_val_onehot = sp.load_npz(data_dir / "X_val_onehot.npz")
-    X_test_onehot = sp.load_npz(data_dir / "X_test_onehot.npz")
-    
-    # Load lexical features
-    print("Loading lexical features...")
-    train_lexical = pd.read_csv(data_dir / "train_lexical_features.csv", index_col=0).values
-    val_lexical = pd.read_csv(data_dir / "val_lexical_features.csv", index_col=0).values
-    test_lexical = pd.read_csv(data_dir / "test_lexical_features.csv", index_col=0).values
-    
-    # Load labels and metadata
-    print("Loading labels...")
-    y_train = np.load(data_dir / "y_train.npy")
-    y_val = np.load(data_dir / "y_val.npy")
-    
-    with open(data_dir / "metadata.pkl", "rb") as f:
-        metadata = pickle.load(f)
-    
-    print(f"✓ Train One-Hot: {X_train_onehot.shape}")
-    print(f"✓ Val One-Hot: {X_val_onehot.shape}")
-    print(f"✓ Train Lexical: {train_lexical.shape}")
-    print(f"✓ Val Lexical: {val_lexical.shape}")
-    print(f"✓ Train labels: {y_train.shape}")
-    print(f"✓ Val labels: {y_val.shape}")
-    
-    return {
-        'X_train_onehot': X_train_onehot, 'X_val_onehot': X_val_onehot,
-        'X_test_onehot': X_test_onehot,
-        'train_lexical': train_lexical, 'val_lexical': val_lexical,
-        'test_lexical': test_lexical,
-        'y_train': y_train, 'y_val': y_val,
-        'metadata': metadata
-    }
+
+    X_train = sp.load_npz(f'{processed_dir}/X_train_onehot.npz')
+    X_val   = sp.load_npz(f'{processed_dir}/X_val_onehot.npz')
+
+    y_train = np.load(f'{processed_dir}/y_train.npy')
+    y_val   = np.load(f'{processed_dir}/y_val.npy')
+
+    print(f"[OK] X_train: {X_train.shape}")
+    print(f"[OK] X_val:   {X_val.shape}")
+    print(f"[OK] y_train: {y_train.shape}")
+    print(f"[OK] y_val:   {y_val.shape}")
+
+    return X_train, X_val, y_train, y_val
 
 
-def combine_features(X_onehot, lexical_features):
-    """Combine One-Hot encoding with lexical features"""
-    # Convert sparse to dense
-    if sp.issparse(X_onehot):
-        X_dense = X_onehot.toarray()
+# ============================================================================
+# 2. DIMENSIONALITY REDUCTION (required before clustering)
+# ============================================================================
+
+def reduce_dimensions(X_train, X_val, n_components=100, max_rows=50000):
+    """
+    TruncatedSVD reduces sparse One-Hot matrix to dense low-dim representation.
+    Subsample train rows to fit Colab RAM.
+    """
+    print("\n[DIMENSIONALITY REDUCTION]")
+    print("=" * 80)
+
+    # subsample for memory
+    if X_train.shape[0] > max_rows:
+        idx = np.random.choice(X_train.shape[0], max_rows, replace=False)
+        X_train_sub = X_train[idx]
+        print(f"Subsampled train to {max_rows} rows for SVD")
     else:
-        X_dense = X_onehot
-    
-    # Concatenate
-    X_combined = np.hstack([X_dense, lexical_features])
-    return X_combined
+        X_train_sub = X_train
+        idx = np.arange(X_train.shape[0])
+
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    X_train_reduced = svd.fit_transform(X_train_sub)
+    X_val_reduced   = svd.transform(X_val)
+
+    # L2 normalize for cosine-like distance
+    X_train_reduced = normalize(X_train_reduced)
+    X_val_reduced   = normalize(X_val_reduced)
+
+    print(f"[OK] Train reduced: {X_train_reduced.shape}")
+    print(f"[OK] Val reduced:   {X_val_reduced.shape}")
+    print(f"Variance explained: {svd.explained_variance_ratio_.sum():.4f}")
+
+    return X_train_reduced, X_val_reduced, idx
 
 
-# =================================================================================================
-# UNSUPERVISED CLUSTERING
-# =================================================================================================
+# ============================================================================
+# 3. CLUSTERING PURITY
+# ============================================================================
 
-def train_kmeans(X_train, X_val, y_val, n_clusters=2):
-    """Train K-Means clustering (optimized for speed)"""
-    print(f"  Training K-Means (k={n_clusters})...")
-    
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-    
-    # Use fewer n_init for speed (default is 10, reduce to 3 for faster training)
-    model = KMeans(n_clusters=n_clusters, random_state=42, n_init=3, verbose=0, max_iter=300)
-    y_pred_train = model.fit_predict(X_train_scaled)
-    y_pred_val = model.predict(X_val_scaled)
-    
-    # Evaluate clustering quality
-    silhouette = silhouette_score(X_val_scaled, y_pred_val)
-    davies_bouldin = davies_bouldin_score(X_val_scaled, y_pred_val)
-    calinski = calinski_harabasz_score(X_val_scaled, y_pred_val)
-    nmi = normalized_mutual_info_score(y_val, y_pred_val)
-    ari = adjusted_rand_score(y_val, y_pred_val)
-    
-    print(f"    Silhouette Score: {silhouette:.4f}")
-    print(f"    Davies-Bouldin Index: {davies_bouldin:.4f}")
-    print(f"    Calinski-Harabasz Index: {calinski:.4f}")
-    print(f"    Normalized Mutual Info: {nmi:.4f}")
-    print(f"    Adjusted Rand Index: {ari:.4f}")
-    
-    return {
-        'model': model,
-        'scaler': scaler,
-        'y_pred_val': y_pred_val,
-        'silhouette': silhouette,
-        'davies_bouldin': davies_bouldin,
-        'calinski': calinski,
-        'nmi': nmi,
-        'ari': ari
+def clustering_purity(y_true, cluster_labels):
+    """
+    For each cluster, find the majority class.
+    Purity = fraction of samples in their majority class.
+    """
+    n = len(y_true)
+    total_correct = 0
+    clusters = np.unique(cluster_labels)
+
+    for c in clusters:
+        mask = cluster_labels == c
+        if mask.sum() == 0:
+            continue
+        labels_in_cluster = y_true[mask]
+        majority_count = np.bincount(labels_in_cluster).max()
+        total_correct += majority_count
+
+    return total_correct / n
+
+
+# ============================================================================
+# 4. K-MEANS CLUSTERING
+# ============================================================================
+
+def run_kmeans(X_train, y_train, X_val, y_val):
+    print("\n[K-MEANS CLUSTERING]")
+    print("=" * 80)
+
+    # 2 clusters — Answer (1) and Non-Answer (0)
+    print("Fitting MiniBatchKMeans (k=2)...")
+    kmeans = MiniBatchKMeans(
+        n_clusters=2,
+        random_state=42,
+        batch_size=5000,
+        max_iter=100,
+        n_init=3
+    )
+    kmeans.fit(X_train)
+
+    # cluster labels on val
+    val_clusters = kmeans.predict(X_val)
+
+    # map cluster to class (0 or 1) by majority vote
+    cluster_to_label = {}
+    for c in [0, 1]:
+        mask = val_clusters == c
+        if mask.sum() == 0:
+            cluster_to_label[c] = 0
+            continue
+        majority = np.bincount(y_val[mask]).argmax()
+        cluster_to_label[c] = majority
+
+    y_pred = np.array([cluster_to_label[c] for c in val_clusters])
+
+    purity    = clustering_purity(y_val, val_clusters)
+    sil_score = silhouette_score(X_val[:5000], val_clusters[:5000], sample_size=2000)
+    acc       = accuracy_score(y_val, y_pred)
+    f1        = f1_score(y_val, y_pred, average='macro')
+
+    print(f"Clustering Purity:  {purity:.4f}")
+    print(f"Silhouette Score:   {sil_score:.4f}")
+    print(f"Mapped Accuracy:    {acc:.4f}")
+    print(f"Mapped Macro F1:    {f1:.4f}")
+    print(classification_report(y_val, y_pred, target_names=['Non-Answer', 'Answer'], digits=4))
+
+    return kmeans, {
+        'Model': 'K-Means (k=2)',
+        'Purity': purity,
+        'Silhouette': sil_score,
+        'Accuracy': acc,
+        'Macro F1': f1
     }
 
 
-def train_gmm(X_train, X_val, y_val, n_components=2):
-    """Train Gaussian Mixture Model"""
-    print(f"  Training Gaussian Mixture Model (components={n_components})...")
-    
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-    
-    model = GaussianMixture(n_components=n_components, random_state=42, n_init=10)
-    model.fit(X_train_scaled)
-    y_pred_val = model.predict(X_val_scaled)
-    
-    # Evaluate clustering quality
-    silhouette = silhouette_score(X_val_scaled, y_pred_val)
-    davies_bouldin = davies_bouldin_score(X_val_scaled, y_pred_val)
-    calinski = calinski_harabasz_score(X_val_scaled, y_pred_val)
-    nmi = normalized_mutual_info_score(y_val, y_pred_val)
-    ari = adjusted_rand_score(y_val, y_pred_val)
-    bic = model.bic(X_val_scaled)
-    aic = model.aic(X_val_scaled)
-    
-    print(f"    Silhouette Score: {silhouette:.4f}")
-    print(f"    Davies-Bouldin Index: {davies_bouldin:.4f}")
-    print(f"    Calinski-Harabasz Index: {calinski:.4f}")
-    print(f"    Normalized Mutual Info: {nmi:.4f}")
-    print(f"    Adjusted Rand Index: {ari:.4f}")
-    print(f"    BIC: {bic:.4f}, AIC: {aic:.4f}")
-    
-    return {
-        'model': model,
-        'scaler': scaler,
-        'y_pred_val': y_pred_val,
-        'silhouette': silhouette,
-        'davies_bouldin': davies_bouldin,
-        'calinski': calinski,
-        'nmi': nmi,
-        'ari': ari,
-        'bic': bic,
-        'aic': aic
+# ============================================================================
+# 5. GAUSSIAN MIXTURE MODEL
+# ============================================================================
+
+def run_gmm(X_train, y_train, X_val, y_val):
+    print("\n[GAUSSIAN MIXTURE MODEL]")
+    print("=" * 80)
+
+    print("Fitting GMM (n_components=2)...")
+    gmm = GaussianMixture(
+        n_components=2,
+        covariance_type='diag',
+        max_iter=100,
+        random_state=42,
+        verbose=0
+    )
+    gmm.fit(X_train)
+
+    val_clusters = gmm.predict(X_val)
+
+    # map component to class by majority vote
+    cluster_to_label = {}
+    for c in [0, 1]:
+        mask = val_clusters == c
+        if mask.sum() == 0:
+            cluster_to_label[c] = 0
+            continue
+        majority = np.bincount(y_val[mask]).argmax()
+        cluster_to_label[c] = majority
+
+    y_pred = np.array([cluster_to_label[c] for c in val_clusters])
+
+    purity    = clustering_purity(y_val, val_clusters)
+    sil_score = silhouette_score(X_val[:5000], val_clusters[:5000], sample_size=2000)
+    acc       = accuracy_score(y_val, y_pred)
+    f1        = f1_score(y_val, y_pred, average='macro')
+
+    print(f"Clustering Purity:  {purity:.4f}")
+    print(f"Silhouette Score:   {sil_score:.4f}")
+    print(f"Mapped Accuracy:    {acc:.4f}")
+    print(f"Mapped Macro F1:    {f1:.4f}")
+    print(classification_report(y_val, y_pred, target_names=['Non-Answer', 'Answer'], digits=4))
+
+    return gmm, {
+        'Model': 'GMM (n=2, diag)',
+        'Purity': purity,
+        'Silhouette': sil_score,
+        'Accuracy': acc,
+        'Macro F1': f1
     }
 
 
-# =================================================================================================
-# SEMI-SUPERVISED LEARNING
-# =================================================================================================
+# ============================================================================
+# 6. LABEL PROPAGATION (SEMI-SUPERVISED)
+# ============================================================================
 
-def train_label_spreading(X_train, X_val, y_train, y_val, alpha=0.2):
+def run_label_propagation(X_train, y_train, X_val, y_val, labeled_fraction=0.1):
     """
-    Train Label Spreading (semi-supervised, faster variant).
-    Uses a fraction of labeled data + remaining as unlabeled.
+    Label Propagation: use small labeled set, rest unlabeled (-1).
     """
-    print(f"  Training Label Spreading (alpha={alpha})...")
-    
-    # Combine train and val for semi-supervised setting
-    X_combined = np.vstack([X_train, X_val])
-    
-    # Create labels: labeled for train, unlabeled (-1) for val
-    n_labeled = len(y_train)
-    y_combined = np.hstack([y_train, np.full(len(y_val), -1)])
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_combined)
-    
-    # Label Spreading (faster than Label Propagation, uses transition matrix regularization)
-    model = LabelSpreading(kernel='rbf', gamma=0.1, alpha=alpha, n_jobs=-1)
-    y_pred = model.fit_predict(X_scaled, y_combined)
-    
-    # Predictions on validation set
-    y_pred_val = y_pred[n_labeled:]
-    
-    # Evaluate on validation set
-    accuracy = accuracy_score(y_val, y_pred_val)
-    macro_f1 = f1_score(y_val, y_pred_val, average='macro')
-    nmi = normalized_mutual_info_score(y_val, y_pred_val)
-    
-    print(f"    Accuracy on validation: {accuracy:.4f}")
-    print(f"    Macro F1 on validation: {macro_f1:.4f}")
-    print(f"    Normalized Mutual Info: {nmi:.4f}")
-    
-    return {
-        'model': model,
-        'scaler': scaler,
-        'y_pred_val': y_pred_val,
-        'accuracy': accuracy,
-        'macro_f1': macro_f1,
-        'nmi': nmi
+    print("\n[LABEL PROPAGATION - SEMI-SUPERVISED]")
+    print("=" * 80)
+
+    n = len(y_train)
+    n_labeled = int(n * labeled_fraction)
+
+    # randomly pick labeled samples
+    rng = np.random.default_rng(42)
+    labeled_idx = rng.choice(n, n_labeled, replace=False)
+
+    # build semi-supervised labels: -1 = unlabeled
+    y_semi = np.full(n, -1, dtype=int)
+    y_semi[labeled_idx] = y_train[labeled_idx]
+
+    print(f"Total train samples:   {n}")
+    print(f"Labeled samples:       {n_labeled} ({labeled_fraction*100:.0f}%)")
+    print(f"Unlabeled samples:     {n - n_labeled}")
+
+    print("Fitting LabelSpreading...")
+    # LabelSpreading is more robust than LabelPropagation on larger data
+    model = LabelSpreading(
+        kernel='knn',
+        n_neighbors=7,
+        alpha=0.2,
+        max_iter=30,
+        n_jobs=-1
+    )
+    model.fit(X_train, y_semi)
+
+    y_pred = model.predict(X_val)
+
+    acc = accuracy_score(y_val, y_pred)
+    f1  = f1_score(y_val, y_pred, average='macro')
+
+    print(f"Semi-Supervised Accuracy: {acc:.4f}")
+    print(f"Semi-Supervised Macro F1: {f1:.4f}")
+    print(classification_report(y_val, y_pred, target_names=['Non-Answer', 'Answer'], digits=4))
+
+    return model, {
+        'Model': f'Label Spreading ({labeled_fraction*100:.0f}% labeled)',
+        'Purity': '-',
+        'Silhouette': '-',
+        'Accuracy': acc,
+        'Macro F1': f1
     }
 
 
-# =================================================================================================
-# OPTION SELECTION EVALUATION (For Clustering)
-# =================================================================================================
+# ============================================================================
+# 7. COMPARISON TABLE
+# ============================================================================
 
-def predict_best_options_from_clusters(y_pred_clusters, metadata):
-    """
-    For clustering predictions, select best option per question.
-    Using cluster membership probability (cluster 1 = answer) for ranking.
-    """
-    options = metadata['options']
-    correct_answers = metadata['answers']
-    val_ids = metadata['val_ids']
-    
-    predictions_per_q = {}
-    
-    # Group by question ID
-    for idx, (option, pred_cluster) in enumerate(zip(options, y_pred_clusters)):
-        q_id = val_ids[idx // 4] if idx < len(val_ids) * 4 else None
-        if q_id not in predictions_per_q:
-            predictions_per_q[q_id] = []
-        # Store option and cluster prediction
-        predictions_per_q[q_id].append((option, pred_cluster))
-    
-    # Select best option (cluster=1 has highest score)
-    correct_count = 0
-    total_count = 0
-    
-    for q_idx, q_id in enumerate(val_ids):
-        if q_id in predictions_per_q:
-            options_for_q = predictions_per_q[q_id]
-            # Find option with cluster membership closest to 1 (assumed "answer" cluster)
-            if len(options_for_q) == 4:
-                # For clustering, use cluster ID as proxy (prefer cluster 1 if binary)
-                best_option = max(options_for_q, key=lambda x: x[1])[0]
-                correct_answer = correct_answers[q_idx]
-                
-                if best_option == correct_answer:
-                    correct_count += 1
-                total_count += 1
-    
-    if total_count > 0:
-        accuracy = correct_count / total_count
-        return accuracy
-    return 0.0
+def build_comparison_table(unsupervised_results, supervised_metrics_path):
+    print("\n[COMPARISON TABLE]")
+    print("=" * 80)
+
+    # load supervised results from Phase 3
+    if os.path.exists(supervised_metrics_path):
+        sup_df = pd.read_csv(supervised_metrics_path)
+        sup_rows = []
+        for _, row in sup_df.iterrows():
+            sup_rows.append({
+                'Model': row['Model'] + ' (Supervised)',
+                'Purity': '-',
+                'Silhouette': '-',
+                'Accuracy': round(row['Accuracy'], 4),
+                'Macro F1': round(row['Macro F1'], 4)
+            })
+    else:
+        sup_rows = []
+        print("Warning: supervised metrics not found, skipping comparison")
+
+    all_rows = sup_rows + unsupervised_results
+    df = pd.DataFrame(all_rows)
+
+    print("\nFull Comparison — Supervised vs Unsupervised/Semi-Supervised:")
+    print(df.to_string(index=False))
+
+    return df
 
 
-# =================================================================================================
-# MAIN EXECUTION
-# =================================================================================================
+# ============================================================================
+# 8. MAIN
+# ============================================================================
 
-def train_and_evaluate_unsupervised():
-    """Main execution function"""
-    
+def run_phase4(
+    processed_dir='/content/drive/MyDrive/data/processed',
+    output_dir='models',
+    supervised_metrics_path='models/binary_classification_metrics.csv'
+):
     print("\n" + "=" * 80)
-    print("PHASE 4 - MODEL A: UNSUPERVISED/SEMI-SUPERVISED LEARNING")
-    print("=" * 80 + "\n")
-    
-    # Load data
-    data = load_preprocessed_data()
-    print()
-    
-    # Combine features
-    print("[COMBINING FEATURES]")
+    print("PHASE 4 - UNSUPERVISED & SEMI-SUPERVISED LEARNING")
     print("=" * 80)
-    X_train = combine_features(data['X_train_onehot'], data['train_lexical'])
-    X_val = combine_features(data['X_val_onehot'], data['val_lexical'])
-    print(f"✓ Train combined features: {X_train.shape}")
-    print(f"✓ Val combined features: {X_val.shape}")
-    print()
-    
-    # Dictionary to store results
-    results = {}
-    
-    # K-MEANS CLUSTERING
-    print("[K-MEANS CLUSTERING]")
-    print("=" * 80)
-    
-    print("\n1. K-Means (k=2: Binary Classification)")
-    kmeans_2 = train_kmeans(X_train, X_val, data['y_val'], n_clusters=2)
-    results['kmeans_2'] = kmeans_2
-    
-    print("\n2. K-Means (k=4: Multi-class)")
-    kmeans_4 = train_kmeans(X_train, X_val, data['y_val'], n_clusters=4)
-    results['kmeans_4'] = kmeans_4
-    print()
-    
-    # GAUSSIAN MIXTURE MODELS
-    print("[GAUSSIAN MIXTURE MODELS]")
-    print("=" * 80)
-    
-    print("\n1. GMM (components=2: Binary)")
-    gmm_2 = train_gmm(X_train, X_val, data['y_val'], n_components=2)
-    results['gmm_2'] = gmm_2
-    
-    print("\n2. GMM (components=4: Multi-class)")
-    gmm_4 = train_gmm(X_train, X_val, data['y_val'], n_components=4)
-    results['gmm_4'] = gmm_4
-    print()
-    
-    # SEMI-SUPERVISED LEARNING
-    print("[SEMI-SUPERVISED LEARNING]")
-    print("=" * 80)
-    
-    print("\n1. Label Spreading")
-    ls = train_label_spreading(X_train, X_val, data['y_train'], data['y_val'])
-    results['label_spreading'] = ls
-    print()
-    
-    # SAVE RESULTS
-    print("[SAVING RESULTS]")
-    print("=" * 80)
-    
-    output_dir = Path("models")
-    output_dir.mkdir(exist_ok=True)
-    
-    # Save clustering results summary
-    clustering_results = {
-        'kmeans_2': {
-            'silhouette': kmeans_2['silhouette'],
-            'davies_bouldin': kmeans_2['davies_bouldin'],
-            'calinski': kmeans_2['calinski'],
-            'nmi': kmeans_2['nmi'],
-            'ari': kmeans_2['ari']
-        },
-        'kmeans_4': {
-            'silhouette': kmeans_4['silhouette'],
-            'davies_bouldin': kmeans_4['davies_bouldin'],
-            'calinski': kmeans_4['calinski'],
-            'nmi': kmeans_4['nmi'],
-            'ari': kmeans_4['ari']
-        },
-        'gmm_2': {
-            'silhouette': gmm_2['silhouette'],
-            'davies_bouldin': gmm_2['davies_bouldin'],
-            'calinski': gmm_2['calinski'],
-            'nmi': gmm_2['nmi'],
-            'ari': gmm_2['ari'],
-            'bic': gmm_2['bic'],
-            'aic': gmm_2['aic']
-        },
-        'gmm_4': {
-            'silhouette': gmm_4['silhouette'],
-            'davies_bouldin': gmm_4['davies_bouldin'],
-            'calinski': gmm_4['calinski'],
-            'nmi': gmm_4['nmi'],
-            'ari': gmm_4['ari'],
-            'bic': gmm_4['bic'],
-            'aic': gmm_4['aic']
-        },
-        'label_spreading': {
-            'accuracy': ls['accuracy'],
-            'macro_f1': ls['macro_f1'],
-            'nmi': ls['nmi']
-        }
-    }
-    
-    with open(output_dir / "unsupervised_clustering_results.pkl", "wb") as f:
-        pickle.dump(clustering_results, f)
-    print("✓ Clustering results saved: unsupervised_clustering_results.pkl")
-    
-    # Save trained models
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # load
+    X_train, X_val, y_train, y_val = load_data(processed_dir)
+
+    # reduce dimensions (required for clustering)
+    X_train_r, X_val_r, sub_idx = reduce_dimensions(
+        X_train, X_val, n_components=100, max_rows=50000
+    )
+    y_train_sub = y_train[sub_idx]
+
+    unsupervised_results = []
+
+    # K-Means
+    kmeans, km_metrics = run_kmeans(X_train_r, y_train_sub, X_val_r, y_val)
+    unsupervised_results.append(km_metrics)
+
+    # GMM
+    gmm, gmm_metrics = run_gmm(X_train_r, y_train_sub, X_val_r, y_val)
+    unsupervised_results.append(gmm_metrics)
+
+    # Label Propagation — use smaller subset (RAM constraint)
+    max_lp = 20000
+    lp_idx = np.random.choice(len(X_train_r), min(max_lp, len(X_train_r)), replace=False)
+    X_lp = X_train_r[lp_idx]
+    y_lp = y_train_sub[lp_idx]
+    lp_val_idx = np.random.choice(len(X_val_r), min(10000, len(X_val_r)), replace=False)
+    X_lp_val = X_val_r[lp_val_idx]
+    y_lp_val = y_val[lp_val_idx]
+
+    lp_model, lp_metrics = run_label_propagation(X_lp, y_lp, X_lp_val, y_lp_val, labeled_fraction=0.1)
+    unsupervised_results.append(lp_metrics)
+
+    # comparison table
+    comparison_df = build_comparison_table(unsupervised_results, supervised_metrics_path)
+
+    # save
+    comparison_df.to_csv(f'{output_dir}/phase4_comparison.csv', index=False)
+
     models_to_save = {
-        'kmeans_2': {'model': kmeans_2['model'], 'scaler': kmeans_2['scaler']},
-        'kmeans_4': {'model': kmeans_4['model'], 'scaler': kmeans_4['scaler']},
-        'gmm_2': {'model': gmm_2['model'], 'scaler': gmm_2['scaler']},
-        'gmm_4': {'model': gmm_4['model'], 'scaler': gmm_4['scaler']},
-        'label_spreading': {'model': ls['model'], 'scaler': ls['scaler']}
+        'kmeans': kmeans,
+        'gmm': gmm,
+        'label_spreading': lp_model
     }
-    
-    with open(output_dir / "unsupervised_models.pkl", "wb") as f:
+    with open(f'{output_dir}/phase4_models.pkl', 'wb') as f:
         pickle.dump(models_to_save, f)
-    print("✓ Trained models saved: unsupervised_models.pkl")
-    
-    # Print summary
-    print("\n" + "=" * 80)
-    print("PHASE 4 SUMMARY - CLUSTERING QUALITY METRICS")
+
+    print("\n[SAVING]")
     print("=" * 80)
-    
-    summary_df = pd.DataFrame({
-        'Method': ['K-Means (k=2)', 'K-Means (k=4)', 'GMM (c=2)', 'GMM (c=4)', 'Label Spread.'],
-        'Silhouette': [
-            kmeans_2['silhouette'],
-            kmeans_4['silhouette'],
-            gmm_2['silhouette'],
-            gmm_4['silhouette'],
-            np.nan
-        ],
-        'Davies-Bouldin': [
-            kmeans_2['davies_bouldin'],
-            kmeans_4['davies_bouldin'],
-            gmm_2['davies_bouldin'],
-            gmm_4['davies_bouldin'],
-            np.nan
-        ],
-        'NMI': [
-            kmeans_2['nmi'],
-            kmeans_4['nmi'],
-            gmm_2['nmi'],
-            gmm_4['nmi'],
-            ls['nmi']
-        ],
-        'Accuracy': [
-            np.nan,
-            np.nan,
-            np.nan,
-            np.nan,
-            ls['accuracy']
-        ]
-    })
-    
-    print(summary_df.to_string(index=False))
-    
-    # Comparison with supervised models from Phase 3
+    print("[OK] phase4_comparison.csv saved")
+    print("[OK] phase4_models.pkl saved")
+
     print("\n" + "=" * 80)
-    print("COMPARISON: UNSUPERVISED vs SUPERVISED (PHASE 3)")
+    print("PHASE 4 COMPLETE!")
     print("=" * 80)
-    print(f"Supervised Best (Naive Bayes): 52.74% option selection accuracy")
-    print(f"Semi-Supervised (Label Spread.): {ls['accuracy']*100:.2f}% binary classification accuracy")
-    print()
-    print(f"✓ Phase 4 training and evaluation complete!")
-    print(f"\nOutput directory: {output_dir}")
-    print(f"Generated files:")
-    print(f"  - unsupervised_clustering_results.pkl (all metrics)")
-    print(f"  - unsupervised_models.pkl (trained models)")
-    
-    return results
+
+    return comparison_df
 
 
 if __name__ == "__main__":
-    train_and_evaluate_unsupervised()
+    run_phase4(
+        processed_dir='/content/drive/MyDrive/data/processed',
+        output_dir='models',
+        supervised_metrics_path='models/binary_classification_metrics.csv'
+    )
