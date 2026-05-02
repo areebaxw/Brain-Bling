@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently \"vite\" \"python -m uvicorn app:app --reload --port 5000 --app-dir ../api\" --names \"frontend,backend\" --prefix-colors \"cyan,magenta\"",
+    "frontend": "vite",
+    "backend": "python -m uvicorn app:app --reload --port 5000 --app-dir ../api",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -19,6 +21,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "concurrently": "^9.0.0"
   }
 }

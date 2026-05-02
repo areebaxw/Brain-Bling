@@ -17,7 +17,7 @@ app = FastAPI(title="Brain Bling API")
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -164,18 +164,24 @@ async def check_answer(input: AnswerCheck):
 
 @app.get("/api/sample-article")
 async def get_sample_article():
-    """Get a sample RACE article"""
-    return {
-        "article": "Mina joined a reading competition at school. She practiced every evening and learned how to find key ideas in long passages. On the final day, she answered most questions correctly because she focused on the main idea of each paragraph.",
-        "question": "What is the main idea of the passage?",
-        "options": [
-            "Mina wanted to avoid reading practice",
-            "Mina improved by practicing reading comprehension",
-            "The competition was about drawing pictures",
-            "Mina answered questions without reading the passage"
-        ],
-        "correct_answer": "B"
-    }
+    """Get a random sample RACE article from dev.csv"""
+    try:
+        data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw", "dev.csv")
+        df = pd.read_csv(data_path)
+        row = df.sample(1).iloc[0]
+        return {
+            "article": row["article"],
+            "question": row["question"],
+            "options": [
+                {"id": "A", "text": row["A"]},
+                {"id": "B", "text": row["B"]},
+                {"id": "C", "text": row["C"]},
+                {"id": "D", "text": row["D"]},
+            ],
+            "correct_answer": row["answer"]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading sample: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
