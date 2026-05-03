@@ -80,7 +80,7 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
-  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [] });
+  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [] });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
   const [correctAnswer, setCorrectAnswer] = useState("");
@@ -90,11 +90,13 @@ export default function BrainBlingTemplate() {
     hint: 0,
     total: 0,
   });
+  const [modelType, setModelType] = useState("");
+  const [verifierResult, setVerifierResult] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/metrics`)
       .then((r) => r.json())
-      .then((data) => setMetrics(data))
+      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [] }))
       .catch((error) => {
         console.error("Failed to load metrics:", error);
         setMessage("Failed to load model metrics. Please ensure the backend is running.");
@@ -178,7 +180,8 @@ export default function BrainBlingTemplate() {
             article: sampleData.article,
             question: sampleData.question,
             options: sampleData.options.map(o => o.text),
-            correct_answer: sampleData.correct_answer
+            correct_answer: sampleData.correct_answer,
+            model_type: modelType || "traditional"
           })
         });
         quizData = await raceQuizRes.json();
@@ -189,7 +192,7 @@ export default function BrainBlingTemplate() {
         const quizRes = await fetch(`${API_BASE_URL}/api/generate-quiz`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ article })
+          body: JSON.stringify({ article, model_type: modelType || "traditional" })
         });
         quizData = await quizRes.json();
         console.log("Quiz API response received");
@@ -239,7 +242,7 @@ export default function BrainBlingTemplate() {
     const start = performance.now();
     console.log("Starting answer verification at:", start);
     try {
-      console.log("Calling check-answer API...");
+      console.log("Calling check-answer API with model_type:", modelType);
       const res = await fetch(`${API_BASE_URL}/api/check-answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -248,16 +251,16 @@ export default function BrainBlingTemplate() {
           question,
           selected_option: selected,
           options: options.map(o => o.text),
-          correct_answer: correctAnswer
+          correct_answer: correctAnswer,
+          model_type: modelType || "bert"
         })
       });
       const data = await res.json();
-      console.log("Check-answer API response received:", data);
-      console.log("Correct answer from check-answer API:", data.correct_answer);
+      console.log("Check-answer API response:", data);
       setChecked(true);
-      setMessage(`Model A verifier: ${data.explanation}`);
+      setVerifierResult(data);
+      setMessage(data.explanation || "");
       setCorrectAnswer(data.correct_answer);
-      console.log("Updated correctAnswer to:", data.correct_answer);
     } catch (error) {
       console.error("Error checking answer:", error);
       setChecked(true);
@@ -347,8 +350,41 @@ export default function BrainBlingTemplate() {
           <section className="w-full max-w-3xl border-2 border-black bg-[#ffc736] p-8 shadow-[9px_9px_0px_#000]">
             <div className="mb-4 flex items-center gap-3">
               <Icon name="upload" />
-              <h2 className="text-3xl font-black">Step 1 — Article Input</h2>
+              <h2 className="text-3xl font-black">Step 1 - Article Input</h2>
             </div>
+
+            {/* Model Selection - required before submit */}
+            <div className="mb-5 border-2 border-black bg-white p-4 shadow-[4px_4px_0px_#000]">
+              <p className="font-black mb-3">Choose Verifier Model for this session:</p>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setModelType("bert")}
+                  className={`border-2 border-black p-4 font-black shadow-[4px_4px_0px_#000] transition ${
+                    modelType === "bert" ? "bg-[#bd83dd] text-white scale-105" : "bg-white hover:bg-[#bd83dd] hover:text-white"
+                  }`}
+                >
+                  <p>BERT (Neural)</p>
+                  <p className="text-xs font-normal mt-1">RoBERTa fine-tuned on RACE<br/>Deep semantic understanding</p>
+                </button>
+                <button
+                  onClick={() => setModelType("traditional")}
+                  className={`border-2 border-black p-4 font-black shadow-[4px_4px_0px_#000] transition ${
+                    modelType === "traditional" ? "bg-[#7cf5d2] scale-105" : "bg-white hover:bg-[#7cf5d2]"
+                  }`}
+                >
+                  <p>Traditional (ML)</p>
+                  <p className="text-xs font-normal mt-1">One-Hot + Cosine Similarity<br/>LR / SVM / Random Forest</p>
+                </button>
+              </div>
+              {modelType && (
+                <p className={`mt-3 text-center font-bold text-sm border-2 border-black p-2 ${
+                  modelType === "bert" ? "bg-[#bd83dd] text-white" : "bg-[#7cf5d2]"
+                }`}>
+                  Selected: {modelType === "bert" ? "BERT (Neural)" : "Traditional (ML)"} - entire quiz will use this model
+                </p>
+              )}
+            </div>
+
             <textarea
               value={article}
               onChange={(event) => setArticle(event.target.value)}
@@ -356,7 +392,15 @@ export default function BrainBlingTemplate() {
               placeholder="Paste reading passage here..."
             />
             <div className="mt-4 flex flex-wrap gap-4">
-              <button onClick={handleSubmitArticle} className="border-2 border-black bg-[#ff8bd8] px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
+              <button
+                onClick={() => {
+                  if (!modelType) { setMessage("Please select a model first."); return; }
+                  handleSubmitArticle();
+                }}
+                className={`border-2 border-black px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition ${
+                  modelType ? "bg-[#ff8bd8]" : "bg-gray-300 cursor-not-allowed"
+                }`}
+              >
                 Submit Article
               </button>
               <button onClick={handleLoadSample} className="border-2 border-black bg-white px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
@@ -381,7 +425,7 @@ export default function BrainBlingTemplate() {
           <section className="border-2 border-black bg-white p-8 shadow-[9px_9px_0px_#000]">
             <div className="mb-4 flex items-center gap-3">
               <Icon name="brain" />
-              <h2 className="text-3xl font-black">Step 2 — Question & Answer Quiz</h2>
+              <h2 className="text-3xl font-black">Step 2 - Question and Answer Quiz</h2>
             </div>
 
             {article && (
@@ -403,7 +447,7 @@ export default function BrainBlingTemplate() {
                       const hintRes = await fetch(`${API_BASE_URL}/api/generate-hints`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ article, question, options: options.map(o => o.text) })
+                        body: JSON.stringify({ article, question, options: options.map(o => o.text), model_type: modelType || "traditional" })
                       });
                       const hintData = await hintRes.json();
                       console.log("Hint API response received");
@@ -451,6 +495,7 @@ export default function BrainBlingTemplate() {
               ))}
             </div>
 
+
             <div className="mt-5 flex flex-wrap gap-4">
               <button onClick={handleCheckAnswer} className="border-2 border-black bg-[#7cf5d2] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
                 Check Answer
@@ -463,13 +508,34 @@ export default function BrainBlingTemplate() {
             </div>
 
             {checked && (
-              <div className={`mt-5 flex items-center gap-3 border-2 border-black p-4 text-white shadow-[4px_4px_0px_#000] ${
-                selected === correctAnswer ? "bg-[#22c55e]" : "bg-[#ff4d00]"
-              }`}>
-                {selected === correctAnswer ? <Icon name="check" /> : <Icon name="x" />}
-                <p className="font-black">
-                  {selected === correctAnswer ? "Correct!" : `Incorrect. Correct answer: ${correctAnswer}`} Model A verifier result shown here.
-                </p>
+              <div className="mt-5 space-y-3">
+                <div className={`flex items-center gap-3 border-2 border-black p-4 text-white shadow-[4px_4px_0px_#000] ${
+                  selected === correctAnswer ? "bg-[#22c55e]" : "bg-[#ff4d00]"
+                }`}>
+                  {selected === correctAnswer ? <Icon name="check" /> : <Icon name="x" />}
+                  <p className="font-black">
+                    {selected === correctAnswer ? "Correct!" : `Incorrect. Correct answer: ${correctAnswer}`}
+                  </p>
+                </div>
+
+                {/* Show result for selected model only */}
+                {verifierResult && (
+                  <div className={`border-2 border-black p-4 shadow-[4px_4px_0px_#000] ${
+                    modelType === "bert" ? "bg-[#bd83dd]" : "bg-[#7cf5d2]"
+                  }`}>
+                    <p className={`font-black text-xs mb-1 ${modelType === "bert" ? "text-white" : ""}`}>
+                      {modelType === "bert" ? "BERT (RoBERTa-RACE) - Neural" : "Traditional (One-Hot Cosine) - ML"}
+                    </p>
+                    <p className={`text-4xl font-black ${modelType === "bert" ? "text-white" : ""}`}>
+                      {modelType === "bert"
+                        ? (verifierResult.bert_confidence != null ? `${(verifierResult.bert_confidence * 100).toFixed(1)}% confidence` : "Not loaded")
+                        : (verifierResult.trad_confidence != null ? `${(verifierResult.trad_confidence * 100).toFixed(1)}% confidence` : "Not loaded")}
+                    </p>
+                    <p className={`text-xs mt-1 ${modelType === "bert" ? "text-white" : ""}`}>
+                      {modelType === "bert" ? "Deep semantic understanding of passage" : "Word frequency cosine similarity"}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -549,7 +615,7 @@ export default function BrainBlingTemplate() {
             <div className="border-2 border-black bg-white p-6 shadow-[9px_9px_0px_#000]">
               <div className="mb-4 flex items-center gap-3">
                 <Icon name="chart" />
-                <h2 className="text-3xl font-black">Step 3 — Results & Analytics</h2>
+                <h2 className="text-3xl font-black">Step 3 - Results and Analytics</h2>
               </div>
 
               {checked && (
@@ -616,6 +682,52 @@ export default function BrainBlingTemplate() {
                         <td className="p-3">{Number(m["Macro F1"]).toFixed(4)}</td>
                         <td className="p-3">{Number(m["ROC-AUC"]).toFixed(4)}</td>
                         <td className="p-3">{getPerformanceBadge(metrics.binary_metrics, m)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <h3 className="text-xl font-black mb-2">Neural vs Traditional - Comparison</h3>
+              <div className="overflow-x-auto border-2 border-black mb-6">
+                <table className="w-full bg-[#7cf5d2] text-left text-sm">
+                  <thead className="border-b-2 border-black bg-[#ff4d00] text-white">
+                    <tr>
+                      <th className="p-3 font-black">Model</th>
+                      <th className="p-3 font-black">Type</th>
+                      <th className="p-3 font-black">Accuracy</th>
+                      <th className="p-3 font-black">Macro F1</th>
+                      <th className="p-3 font-black">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...metrics.binary_metrics.map(m => ({...m, Type: "Traditional"})),
+                      ...metrics.ensemble_metrics.filter(m => m.Model === "Hard Voting").map(m => ({...m, Type: "Ensemble"})),
+                      ...metrics.neural_metrics
+                    ].map((m, i) => (
+                      <tr key={m.Model + i} className={`border-b-2 border-black ${i % 2 === 1 ? "bg-white" : ""}`}>
+                        <td className="p-3 font-bold">{m.Model}</td>
+                        <td className="p-3">
+                          <span className={`inline-block border-2 border-black px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000] ${
+                            m.Type === "Neural" ? "bg-[#bd83dd] text-white" :
+                            m.Type === "Ensemble" ? "bg-[#ffc736]" : "bg-white"
+                          }`}>{m.Type}</span>
+                        </td>
+                        <td className="p-3 font-bold">
+                          {m.Type === "Neural" && m.Accuracy === "Run eval"
+                            ? <span className="text-gray-500 italic">Pending eval</span>
+                            : typeof m.Accuracy === "number" ? m.Accuracy.toFixed(4) : m.Accuracy}
+                        </td>
+                        <td className="p-3">
+                          {m.Type === "Neural" && m["Macro F1"] === "Run eval"
+                            ? <span className="text-gray-500 italic">Pending eval</span>
+                            : typeof m["Macro F1"] === "number" ? m["Macro F1"].toFixed(4) : m["Macro F1"]}
+                        </td>
+                        <td className="p-3">
+                          {m.Type === "Neural"
+                            ? <span className="inline-block border-2 border-black bg-[#bd83dd] px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]">Loaded</span>
+                            : getPerformanceBadge(metrics.binary_metrics, m)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
