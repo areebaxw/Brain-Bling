@@ -38,6 +38,14 @@ data/processed/*.pkl
 models/*.pkl
 models/*.csv
 
+# Large neural model files (too big for GitHub)
+*.safetensors
+*.bin
+*.pt
+*.pth
+models/model_a/neural/
+models/model_b/neural/
+
 # IDE
 .vscode/
 .idea/
