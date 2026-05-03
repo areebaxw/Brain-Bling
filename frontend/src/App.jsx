@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from "react";
 
+// API Configuration
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
 function Icon({ name, size = 24 }) {
   const common = {
     width: size,
@@ -78,14 +81,9 @@ export default function BrainBlingTemplate() {
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
   const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [] });
-  const [question, setQuestion] = useState("What is the main idea of the passage?");
-  const [options, setOptions] = useState([
-    { id: "A", text: "Mina wanted to avoid reading practice" },
-    { id: "B", text: "Mina improved by practicing reading comprehension" },
-    { id: "C", text: "The competition was about drawing pictures" },
-    { id: "D", text: "Mina answered questions without reading the passage" },
-  ]);
-  const [correctAnswer, setCorrectAnswer] = useState("B");
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState([]);
+  const [correctAnswer, setCorrectAnswer] = useState("");
   const [inferenceTimes, setInferenceTimes] = useState({
     verification: 0,
     distractor: 0,
@@ -94,30 +92,19 @@ export default function BrainBlingTemplate() {
   });
 
   useEffect(() => {
-    fetch("http://localhost:5000/metrics")
+    fetch(`${API_BASE_URL}/metrics`)
       .then((r) => r.json())
       .then((data) => setMetrics(data))
-      .catch(() => {
-        setMetrics({
-          binary_metrics: [
-            { Model: "Logistic Regression", Accuracy: 0.6725, Precision: 0.2947, Recall: 0.2224, "Macro F1": 0.5219, "ROC-AUC": 0.5387 },
-            { Model: "SVM", Accuracy: 0.6741, Precision: 0.2962, Recall: 0.2206, "Macro F1": 0.5222, "ROC-AUC": 0.5388 },
-            { Model: "Naive Bayes", Accuracy: 0.6218, Precision: 0.2525, Recall: 0.2617, "Macro F1": 0.5017, "ROC-AUC": 0.5034 },
-            { Model: "Random Forest", Accuracy: 0.5932, Precision: 0.2751, Recall: 0.3837, "Macro F1": 0.5151, "ROC-AUC": 0.5364 },
-          ],
-          ensemble_metrics: [
-            { Model: "Soft Voting", Accuracy: 0.5490, Precision: 0.2687, Recall: 0.4672, "Macro F1": 0.4992, "ROC-AUC": 0.5276 },
-            { Model: "Hard Voting", Accuracy: 0.6809, Precision: 0.2948, Recall: 0.1985, "Macro F1": 0.5178, "ROC-AUC": 0.5276 },
-            { Model: "Stacking", Accuracy: 0.6380, Precision: 0.2625, Recall: 0.2476, "Macro F1": 0.5079, "ROC-AUC": 0.5181 },
-          ],
-        });
+      .catch((error) => {
+        console.error("Failed to load metrics:", error);
+        setMessage("Failed to load model metrics. Please ensure the backend is running.");
       });
   }, []);
 
   async function handleLoadSample() {
     setMessage("Loading random sample from dataset...");
     try {
-      const res = await fetch("http://localhost:5000/api/sample-article?" + Date.now(), {
+      const res = await fetch(`${API_BASE_URL}/api/sample-article?${Date.now()}`, {
         headers: { 
           "Cache-Control": "no-cache",
           "Pragma": "no-cache"
@@ -127,14 +114,9 @@ export default function BrainBlingTemplate() {
       
       // RESET ALL QUIZ STATE to prevent caching issues
       setArticle(data.article);
-      setQuestion("What is the main idea of the passage?");
-      setOptions([
-        { id: "A", text: "" },
-        { id: "B", text: "" },
-        { id: "C", text: "" },
-        { id: "D", text: "" }
-      ]);
-      setCorrectAnswer("");
+      setQuestion(data.question || "");
+      setOptions(data.options || []);
+      setCorrectAnswer(data.correct_answer || "");
       setSelected("");
       setChecked(false);
       setMessage("Random RACE sample loaded. Click 'Submit Article' to generate quiz with distractors.");
@@ -170,7 +152,7 @@ export default function BrainBlingTemplate() {
     try {
       // Check if this is a RACE sample by calling the sample API to get current sample
       console.log("Getting current RACE sample...");
-      const sampleRes = await fetch("http://localhost:5000/api/sample-article?" + Date.now(), {
+      const sampleRes = await fetch(`${API_BASE_URL}/api/sample-article?${Date.now()}`, {
         headers: { 
           "Cache-Control": "no-cache",
           "Pragma": "no-cache"
@@ -185,7 +167,7 @@ export default function BrainBlingTemplate() {
       if (isRaceSample) {
         console.log("RACE sample detected, calling generate-race-quiz API...");
         // Use RACE quiz workflow: keep original correct answer, replace 3 wrong with distractors
-        const raceQuizRes = await fetch("http://localhost:5000/api/generate-race-quiz?" + Date.now(), {
+        const raceQuizRes = await fetch(`${API_BASE_URL}/api/generate-race-quiz?${Date.now()}`, {
           method: "POST",
           headers: { 
             "Content-Type": "application/json",
@@ -195,7 +177,7 @@ export default function BrainBlingTemplate() {
           body: JSON.stringify({ 
             article: sampleData.article,
             question: sampleData.question,
-            options: [sampleData.A.text, sampleData.B.text, sampleData.C.text, sampleData.D.text],
+            options: sampleData.options.map(o => o.text),
             correct_answer: sampleData.correct_answer
           })
         });
@@ -204,7 +186,7 @@ export default function BrainBlingTemplate() {
       } else {
         console.log("Manual article detected, calling generate-quiz API...");
         // Use manual article workflow: generate question + 1 correct + 3 distractors
-        const quizRes = await fetch("http://localhost:5000/api/generate-quiz", {
+        const quizRes = await fetch(`${API_BASE_URL}/api/generate-quiz`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ article })
@@ -258,7 +240,7 @@ export default function BrainBlingTemplate() {
     console.log("Starting answer verification at:", start);
     try {
       console.log("Calling check-answer API...");
-      const res = await fetch("http://localhost:5000/api/check-answer", {
+      const res = await fetch(`${API_BASE_URL}/api/check-answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -279,7 +261,7 @@ export default function BrainBlingTemplate() {
     } catch (error) {
       console.error("Error checking answer:", error);
       setChecked(true);
-      setMessage("API unavailable. Using local verification.");
+      setMessage("API unavailable. Please ensure the backend is running.");
     }
     const end = performance.now();
     const verificationTime = Math.round(end - start);
@@ -418,7 +400,7 @@ export default function BrainBlingTemplate() {
                     console.log("Starting hint generation at:", start);
                     try {
                       console.log("Calling hint API...");
-                      const hintRes = await fetch("http://localhost:5000/api/generate-hints", {
+                      const hintRes = await fetch(`${API_BASE_URL}/api/generate-hints`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ article, question, options: options.map(o => o.text) })
@@ -429,11 +411,8 @@ export default function BrainBlingTemplate() {
                       window.currentHints = hintData.hints;
                     } catch (error) {
                       console.error("Error generating hints:", error);
-                      window.currentHints = [
-                        "Hint 1: Look for key information in the passage",
-                        "Hint 2: Focus on the main topic",
-                        "Hint 3: Consider the context"
-                      ];
+                      setMessage("Failed to generate hints. Please ensure the backend is running.");
+                      window.currentHints = [];
                     }
                     const end = performance.now();
                     const hintTime = Math.round(end - start);
@@ -513,18 +492,18 @@ export default function BrainBlingTemplate() {
                 </button>
               </div>
               <div className="p-6">
-                <div className="grid gap-4 md:grid-cols-3">
-                  {(window.currentHints || [
-                    "Hint 1: Look for key information in the passage",
-                    "Hint 2: Focus on the main topic",
-                    "Hint 3: Consider the context"
-                  ]).map((hint, i) => (
-                    <div key={i} className={`border-2 border-black ${i % 2 === 1 ? "bg-[#ffc736]" : "bg-white"} p-4 shadow-[4px_4px_0px_#000]`}>
-                      <h3 className="text-xl font-black">Hint {i + 1}</h3>
-                      <p>{hint}</p>
-                    </div>
-                  ))}
-                </div>
+                {window.currentHints && window.currentHints.length > 0 ? (
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {window.currentHints.map((hint, i) => (
+                      <div key={i} className={`border-2 border-black ${i % 2 === 1 ? "bg-[#ffc736]" : "bg-white"} p-4 shadow-[4px_4px_0px_#000]`}>
+                        <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                        <p>{hint}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-center font-bold">No hints available. Please try generating hints again.</p>
+                )}
               </div>
               <button className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000]">
                 Reveal Answer

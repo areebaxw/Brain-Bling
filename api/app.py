@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -5,15 +6,16 @@ import pandas as pd
 import pickle
 import numpy as np
 import os
-import re
-import random
 from typing import List, Optional
-from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+import re
+from collections import Counter
+import random
 
 app = FastAPI(title="Brain Bling API")
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:5173"],
@@ -22,56 +24,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Models directory path
 MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
-DATA_DIR   = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "raw")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 
-trained_models    = None
-ensemble_models   = None
-distractor_bundle = None
-hint_bundle       = None
-phase4_models     = None
-
+# Load models on startup
+trained_models = None
+ensemble_models = None
+distractor_model = None
+hint_model_bundle = None
+onehot_vectorizer = None
 
 def load_models():
-    global trained_models, ensemble_models, distractor_bundle, hint_bundle, phase4_models
-
+    global trained_models, ensemble_models, distractor_model, hint_model_bundle, onehot_vectorizer
     try:
-        with open(f"{MODELS_DIR}/trained_models.pkl", "rb") as f:
-            trained_models = pickle.load(f)
-        print("[OK] trained_models loaded")
-        print(f"[DEBUG] trained_models keys: {list(trained_models.keys()) if isinstance(trained_models, dict) else type(trained_models)}")
+        if os.path.exists(f"{MODELS_DIR}/trained_models.pkl"):
+            with open(f"{MODELS_DIR}/trained_models.pkl", "rb") as f:
+                trained_models = pickle.load(f)
+            print("Loaded trained_models.pkl")
+        
+        if os.path.exists(f"{MODELS_DIR}/ensemble_models.pkl"):
+            with open(f"{MODELS_DIR}/ensemble_models.pkl", "rb") as f:
+                ensemble_models = pickle.load(f)
+            print("Loaded ensemble_models.pkl")
+        
+        if os.path.exists(f"{MODELS_DIR}/distractor_model.pkl"):
+            with open(f"{MODELS_DIR}/distractor_model.pkl", "rb") as f:
+                distractor_model = pickle.load(f)
+            print("Loaded distractor_model.pkl")
+        
+        if os.path.exists(f"{MODELS_DIR}/hint_model.pkl"):
+            with open(f"{MODELS_DIR}/hint_model.pkl", "rb") as f:
+                hint_model_bundle = pickle.load(f)
+            print("Loaded hint_model.pkl")
+        
+        if os.path.exists(f"{MODELS_DIR}/onehot_vectorizer.pkl"):
+            with open(f"{MODELS_DIR}/onehot_vectorizer.pkl", "rb") as f:
+                onehot_vectorizer = pickle.load(f)
+            print("Loaded onehot_vectorizer.pkl")
+        
+        print("All models loaded successfully")
     except Exception as e:
-        print(f"[WARN] trained_models: {e}")
-
-    try:
-        with open(f"{MODELS_DIR}/ensemble_models.pkl", "rb") as f:
-            ensemble_models = pickle.load(f)
-        print("[OK] ensemble_models loaded")
-    except Exception as e:
-        print(f"[WARN] ensemble_models: {e}")
-
-    try:
-        with open(f"{MODELS_DIR}/distractor_model.pkl", "rb") as f:
-            distractor_bundle = pickle.load(f)
-        print(f"[OK] distractor_model loaded — type: {type(distractor_bundle)}")
-    except Exception as e:
-        print(f"[WARN] distractor_model: {e}")
-
-    try:
-        with open(f"{MODELS_DIR}/hint_model.pkl", "rb") as f:
-            hint_bundle = pickle.load(f)
-        print(f"[OK] hint_model loaded — type: {type(hint_bundle)}")
-    except Exception as e:
-        print(f"[WARN] hint_model: {e}")
-
-    try:
-        with open(f"{MODELS_DIR}/phase4_models.pkl", "rb") as f:
-            phase4_models = pickle.load(f)
-        print(f"[OK] phase4_models loaded — type: {type(phase4_models)}")
-        print(f"[DEBUG] phase4_models keys: {list(phase4_models.keys()) if isinstance(phase4_models, dict) else type(phase4_models)}")
-    except Exception as e:
-        print(f"[WARN] phase4_models: {e}")
-
+        print(f"Error loading models: {e}")
+        import traceback
+        traceback.print_exc()
 
 load_models()
 
@@ -113,32 +109,160 @@ def split_sentences(text):
     return [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
 
 
+def generate_wh_question(sentence):
+    """
+    Rule-based Wh-word template question generation.
+    Transforms a declarative sentence into a question + answer pair.
+    Prioritizes proper nouns (Who/Where) for best quality questions.
+    Returns (question_str, answer_str) or (None, None).
+    """
+    words = sentence.split()
+    if len(words) < 5:
+        return None, None
+
+    # Skip sentences starting with conjunctions or labels — they make bad questions
+    skip_starts = ['but', 'and', 'or', 'so', 'however', 'also', 'then', 'yet', 'rates:', 'price:', 'cost:', 'from', 'rooms:', 'the', 'a', 'an']
+    if words[0].lower() in skip_starts:
+        return None, None
+
+    # Strategy 1 (best): Capitalized proper noun (not sentence start) → Who/Where
+    for i, w in enumerate(words):
+        if i > 0 and len(w) > 2 and w[0].isupper() and w.lower() not in STOPWORDS:
+            answer = w
+            j = i + 1
+            while j < len(words) and len(words[j]) > 1 and words[j][0].isupper():
+                answer += ' ' + words[j]
+                j += 1
+            remaining = words[:i] + ['_______'] + words[j:]
+            if i > 0 and words[i-1].lower() in ['in', 'at', 'near', 'from', 'to', 'around']:
+                answer = words[i-1] + ' ' + answer
+                remaining = words[:i-1] + ['_______'] + words[j:]
+                question = "According to the passage, where " + ' '.join(remaining).lstrip(',').strip() + "?"
+            else:
+                question = "According to the passage, who " + ' '.join(remaining).lstrip(',').strip() + "?"
+            return question, re.sub(r'[,;:]$', '', answer).strip()
+
+    # Strategy 2: Key content word → fill-in-the-blank with "What"
+    content_indices = [
+        (i, w) for i, w in enumerate(words)
+        if len(w) >= 5 and w.lower() not in STOPWORDS and w.isalpha() and i > 0
+    ]
+    if content_indices:
+        mid = len(content_indices) // 2
+        idx, answer = content_indices[mid]
+        remaining = words[:idx] + ['_______'] + words[idx+1:]
+        question = "According to the passage, " + ' '.join(remaining) + "?"
+        return question, answer
+
+    return None, None
+
+
+def rank_questions(questions_with_answers, article):
+    """
+    Rank candidate questions by fluency and relevance features.
+    Uses keyword overlap with article as a simple relevance score.
+    """
+    article_words = set(clean(article).split()) - STOPWORDS
+    scored = []
+    for question, answer in questions_with_answers:
+        q_words = set(clean(question).split()) - STOPWORDS
+        # Relevance: keyword overlap with article
+        overlap = len(q_words & article_words) / max(len(q_words), 1)
+        # Fluency: prefer questions with 8-15 words
+        q_len = len(question.split())
+        length_score = 1.0 if 8 <= q_len <= 15 else 0.5
+        # Answer quality: prefer 1-3 word answers
+        a_len = len(answer.split())
+        answer_score = 1.0 if 1 <= a_len <= 3 else 0.5
+        score = overlap * length_score * answer_score
+        scored.append((question, answer, score))
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return scored
+
+
 def extract_candidates_from_sentence(sentence, correct_answer):
     words = sentence.split()
     candidates = []
-    
     for i in range(len(words)):
         for length in range(1, 4):
             if i + length <= len(words):
-                candidate = ' '.join(words[i:i+length])
-                if len(candidate) > 2 and candidate.lower() != correct_answer.lower():
+                candidate = re.sub(r'[^a-zA-Z0-9 ]', ' ', ' '.join(words[i:i+length])).strip()
+                candidate = re.sub(r'\s+', ' ', candidate).strip()
+                cand_words = candidate.split()
+                stopword_ratio = sum(1 for w in cand_words if w.lower() in STOPWORDS) / max(len(cand_words), 1)
+                has_fragment = any(len(w) <= 1 for w in cand_words)
+                if (len(candidate) >= 4 and
+                    candidate.lower() != correct_answer.lower() and
+                    candidate.lower() not in STOPWORDS and
+                    not candidate.isdigit() and
+                    any(c.isalpha() for c in candidate) and
+                    stopword_ratio < 0.4 and
+                    not has_fragment):
                     candidates.append(candidate)
-    
     word_freq = Counter(words)
-    freq_candidates = [word for word, count in word_freq.items() if count > 1 and len(word) > 2 and word.lower() != correct_answer.lower()]
+    freq_candidates = [
+        re.sub(r'[^a-zA-Z0-9 ]', ' ', w).strip() for w, count in word_freq.items()
+        if count >= 2 and len(w) >= 4 and w.lower() not in STOPWORDS
+        and w.lower() != correct_answer.lower() and any(c.isalpha() for c in w)
+    ]
     candidates.extend(freq_candidates)
-    
-    return list(set(candidates))
+    return list(set(c for c in candidates if c))
 
-def extract_candidates(article, correct_answer, top_n=30):
+
+def extract_candidates(article, correct_answer):
     sentences = split_sentences(article)
     all_candidates = []
-    
     for sentence in sentences:
-        candidates = extract_candidates_from_sentence(sentence, correct_answer)
-        all_candidates.extend(candidates)
-    
-    return list(set(all_candidates))[:top_n]
+        all_candidates.extend(extract_candidates_from_sentence(sentence, correct_answer))
+    return list(set(all_candidates))
+
+
+def augment_candidates(correct_answer, article):
+    extra = []
+    words = correct_answer.split()
+    # Only apply negation/morphological variants for short answers (phrase-level)
+    if len(words) <= 4:
+        extra.append('not ' + correct_answer)
+        if any(c.isdigit() for c in correct_answer):
+            for n in range(1, 10):
+                variant = re.sub(r'\d+', str(n), correct_answer)
+                if variant != correct_answer:
+                    extra.append(variant)
+                    break
+        if len(words) == 1 and len(words[0]) > 4:
+            word = words[0].lower()
+            for prefix in ['un', 're', 'over', 'under', 'mis']:
+                if not word.startswith(prefix):
+                    extra.append(prefix + word)
+            if word.endswith('ing'):
+                extra.append(word[:-3] + 'ed')
+            elif word.endswith('ed'):
+                extra.append(word[:-2] + 'ing')
+            elif word.endswith('ly'):
+                extra.append(word[:-2])
+    # Top frequent content words from article always added
+    article_words = article.lower().split()
+    word_freq = Counter(article_words)
+    top_words = [
+        w for w, c in word_freq.most_common(30)
+        if len(w) >= 4 and w not in STOPWORDS and w != correct_answer.lower()
+    ]
+    extra.extend(top_words[:15])
+    return list(set(c for c in extra if c and c.lower() != correct_answer.lower()))
+
+
+def diversity_penalty(candidate, selected):
+    if not selected:
+        return 0.0
+    cand_tokens = set(candidate.lower().split())
+    max_overlap = 0.0
+    for s in selected:
+        s_tokens = set(s.lower().split())
+        union = cand_tokens | s_tokens
+        if union:
+            overlap = len(cand_tokens & s_tokens) / len(union)
+            max_overlap = max(max_overlap, overlap)
+    return max_overlap
 
 
 def char_match(a, b):
@@ -159,53 +283,78 @@ def passage_freq(candidate, article):
     return count
 
 
+def get_char_ngram_overlap(text1, text2, n=2):
+    def get_ngrams(text, n):
+        text = text.lower().replace(' ', '')
+        return set(text[i:i+n] for i in range(len(text)-n+1))
+    ng1, ng2 = get_ngrams(text1, n), get_ngrams(text2, n)
+    if not ng1 or not ng2:
+        return 0.0
+    return len(ng1 & ng2) / len(ng1 | ng2)
+
+
 def extract_features(candidates, correct_answer, article):
+    # Article-context TF-IDF for better IDF weights (matches training)
+    cos_sims = np.zeros(len(candidates))
     try:
-        vectorizer = TfidfVectorizer(max_features=5000, min_df=1)
-        vectorizer.fit(candidates + [correct_answer])
-        cand_vecs = vectorizer.transform(candidates)
-        corr_vec  = vectorizer.transform([correct_answer])
-        cos_sims  = cosine_similarity(cand_vecs, corr_vec).ravel()
+        vectorizer = TfidfVectorizer(max_features=5000, min_df=1, token_pattern=r"(?u)\b\w+\b")
+        context = [s for s in split_sentences(article) if s.strip()]
+        fit_texts = context + candidates + [correct_answer]
+        if len(fit_texts) >= 2:
+            vectorizer.fit(fit_texts)
+            cand_vecs = vectorizer.transform(candidates)
+            corr_vec  = vectorizer.transform([correct_answer])
+            cos_sims  = cosine_similarity(cand_vecs, corr_vec).ravel()
     except Exception:
-        cos_sims = np.zeros(len(candidates))
-    char_matches = np.array([char_match(c, correct_answer) for c in candidates])
-    freq_counts  = np.array([passage_freq(c, article) for c in candidates])
-    return np.column_stack([cos_sims, char_matches, freq_counts])
-
-
-def get_ranker():
-    if distractor_bundle is None:
-        return None
-    if isinstance(distractor_bundle, dict):
-        return distractor_bundle.get('ranker')
-    return distractor_bundle
-
-
-def get_hint_model():
-    if hint_bundle is None:
-        return None
-    if isinstance(hint_bundle, dict):
-        return hint_bundle.get('hint_model')
-    return hint_bundle
+        cos_sims = np.array([char_match(c, correct_answer) for c in candidates])
+    char_matches  = np.array([char_match(c, correct_answer) for c in candidates])
+    freq_counts   = np.array([passage_freq(c, article) for c in candidates])
+    word_lengths  = np.array([len(c.split()) for c in candidates])
+    char_lengths  = np.array([len(c) for c in candidates])
+    char_bigrams  = np.array([get_char_ngram_overlap(c, correct_answer, 2) for c in candidates])
+    char_trigrams = np.array([get_char_ngram_overlap(c, correct_answer, 3) for c in candidates])
+    ans_wc = max(len(correct_answer.split()), 1)
+    wc_match  = np.array([min(len(c.split()), ans_wc) / max(len(c.split()), ans_wc) for c in candidates])
+    ans_cl = max(len(correct_answer), 1)
+    len_ratio = np.array([min(len(c), ans_cl) / max(len(c), ans_cl) for c in candidates])
+    return np.column_stack([cos_sims, char_matches, freq_counts, word_lengths, char_lengths, char_bigrams, char_trigrams, wc_match, len_ratio])
 
 
 def run_distractor_generation(article, correct_answer):
-    ranker = get_ranker()
-    if ranker is None:
+    if distractor_model is None:
         return []
 
-    candidates = extract_candidates(article, correct_answer)
+    candidates = list(set(extract_candidates(article, correct_answer) + augment_candidates(correct_answer, article)))
     if not candidates:
         return []
 
     features = extract_features(candidates, correct_answer, article)
+    ans_wc = len(correct_answer.split())
 
     try:
-        scores = ranker.predict_proba(features)[:, 1]
+        proba = distractor_model.predict_proba(features)
+        scores = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
         ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-        result = [c for c, s in ranked if c.lower() != correct_answer.lower()][:3]
-        print(f"[Distractor] candidates={len(candidates)} result={result}")
-        return result
+
+        # Filter candidates to similar word count as answer (±1 word)
+        wc_filtered = [(c, s) for c, s in ranked if abs(len(c.split()) - ans_wc) <= 1]
+        # Fallback to all if too few match
+        pool = wc_filtered if len(wc_filtered) >= 3 else ranked
+
+        selected = []
+        for cand, score in pool:
+            if len(selected) >= 3:
+                break
+            if diversity_penalty(cand, selected) < 0.35:
+                selected.append(cand)
+        if len(selected) < 3:
+            for cand, score in pool:
+                if cand not in selected:
+                    selected.append(cand)
+                if len(selected) >= 3:
+                    break
+        print(f"[Distractor] candidates={len(candidates)} wc_filtered={len(wc_filtered)} result={selected}")
+        return selected
     except Exception as e:
         print(f"[Distractor ERROR] {e}")
         return candidates[:3]
@@ -216,7 +365,13 @@ def run_hint_generation(article, question):
     if not sentences:
         return []
 
-    model = get_hint_model()
+    model = None
+    if hint_model_bundle is not None:
+        if isinstance(hint_model_bundle, dict):
+            model = hint_model_bundle.get('hint_model')
+        else:
+            model = hint_model_bundle
+    
     if model is None:
         return sentences[:3]
 
@@ -281,8 +436,9 @@ async def health_check():
         "models_loaded": {
             "trained_models":   trained_models is not None,
             "ensemble_models":  ensemble_models is not None,
-            "distractor_model": distractor_bundle is not None,
-            "hint_model":       hint_bundle is not None,
+            "distractor_model": distractor_model is not None,
+            "hint_model":       hint_model_bundle is not None,
+            "onehot_vectorizer": onehot_vectorizer is not None
         }
     }
 
@@ -303,15 +459,17 @@ async def get_metrics():
 @app.get("/api/sample-article")
 async def get_sample_article():
     try:
-        df  = pd.read_csv(f"{DATA_DIR}/dev.csv")
+        df  = pd.read_csv(f"{DATA_DIR}/raw/dev.csv")
         row = df.sample(1).iloc[0]
         return {
             "article":        str(row["article"]),
             "question":       str(row["question"]),
-            "A":              {"text": str(row["A"])},
-            "B":              {"text": str(row["B"])},
-            "C":              {"text": str(row["C"])},
-            "D":              {"text": str(row["D"])},
+            "options": [
+                {"id": "A", "text": str(row["A"])},
+                {"id": "B", "text": str(row["B"])},
+                {"id": "C", "text": str(row["C"])},
+                {"id": "D", "text": str(row["D"])},
+            ],
             "correct_answer": str(row["answer"])
         }
     except Exception as e:
@@ -352,26 +510,26 @@ async def generate_quiz(input: ArticleInput):
     try:
         sentences = split_sentences(input.article)
         
-        # Varied question patterns to avoid repetition
-        question_patterns = [
-            "What is the main idea of the passage?",
-            "What does the passage mainly discuss?",
-            "According to the passage, what is the primary focus?",
-            "What is the key message conveyed in the text?",
-            "What is the central theme of the passage?",
-            "What topic is primarily addressed in the text?",
-            "What is the main subject of the passage?",
-            "What concept does the passage primarily explain?"
-        ]
+        # Step 1 & 2: Generate Wh-questions from each sentence using templates
+        candidates_qa = []
+        for sent in sentences:
+            q, a = generate_wh_question(sent)
+            if q and a:
+                candidates_qa.append((q, a))
         
-        # Randomly select a question pattern
-        import random
-        question = random.choice(question_patterns)
-        
-        correct_text = sentences[0] if sentences else "The passage describes a key concept."
+        # Step 3: Rank questions by fluency and relevance
+        if candidates_qa:
+            ranked = rank_questions(candidates_qa, input.article)
+            question = ranked[0][0]
+            correct_text = ranked[0][1]
+        else:
+            # Fallback if no questions could be generated
+            question = "What is the main topic discussed in the passage?"
+            correct_text = sentences[0].split()[0] if sentences else "topic"
 
-        print(f"\n[QUIZ] article={input.article[:80]} correct={correct_text}")
+        print(f"\n[QUIZ] question={question[:60]} correct={correct_text}")
 
+        # Generate distractors for the correct answer
         distractors = run_distractor_generation(input.article, correct_text)
         while len(distractors) < 3:
             distractors.append(f"option {len(distractors)+1}")
