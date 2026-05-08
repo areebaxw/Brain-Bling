@@ -609,12 +609,40 @@ async def health_check():
     }
 
 
+def _score_texts(references, hypotheses, nltk, scorer, smoother):
+    """Helper: compute avg BLEU/ROUGE/METEOR for paired reference/hypothesis lists."""
+    bleu_scores, meteor_scores = [], []
+    r1_scores, r2_scores, rL_scores = [], [], []
+    from nltk.translate.bleu_score import sentence_bleu
+    from nltk.translate.meteor_score import meteor_score
+    for ref, hyp in zip(references, hypotheses):
+        if not ref or not hyp:
+            continue
+        ref_tok = nltk.word_tokenize(ref.lower())
+        hyp_tok = nltk.word_tokenize(hyp.lower())
+        bleu_scores.append(sentence_bleu([ref_tok], hyp_tok, smoothing_function=smoother))
+        meteor_scores.append(meteor_score([ref_tok], hyp_tok))
+        r = scorer.score(ref, hyp)
+        r1_scores.append(r["rouge1"].fmeasure)
+        r2_scores.append(r["rouge2"].fmeasure)
+        rL_scores.append(r["rougeL"].fmeasure)
+    if not bleu_scores:
+        return None
+    return {
+        "BLEU":    round(float(np.mean(bleu_scores)), 4),
+        "ROUGE-1": round(float(np.mean(r1_scores)), 4),
+        "ROUGE-2": round(float(np.mean(r2_scores)), 4),
+        "ROUGE-L": round(float(np.mean(rL_scores)), 4),
+        "METEOR":  round(float(np.mean(meteor_scores)), 4),
+        "samples": len(bleu_scores),
+    }
+
+
 def compute_nlg_metrics(n_samples: int = 100):
-    """Compute BLEU, ROUGE, METEOR scores by comparing generated questions to RACE references."""
+    """Compute BLEU, ROUGE, METEOR for question generation and distractor generation (traditional vs neural)."""
     try:
         import nltk
-        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-        from nltk.translate.meteor_score import meteor_score
+        from nltk.translate.bleu_score import SmoothingFunction
         from rouge_score import rouge_scorer
 
         dev_path = f"{DATA_DIR}/raw/dev.csv"
@@ -622,43 +650,55 @@ def compute_nlg_metrics(n_samples: int = 100):
             return None
 
         df = pd.read_csv(dev_path).dropna(subset=["article", "question"]).head(n_samples)
-        scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
+        rouge_sc = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
         smoother = SmoothingFunction().method1
 
-        bleu_scores, meteor_scores = [], []
-        r1_scores, r2_scores, rL_scores = [], [], []
+        # ── Question generation metrics ──────────────────────────────────
+        q_refs, q_hyps = [], []
+        d_refs_trad, d_hyps_trad = [], []
+        d_refs_neural, d_hyps_neural = [], []
 
         for _, row in df.iterrows():
-            article   = str(row["article"])
-            reference = str(row["question"])
-            generated, _ = generate_wh_question(article, str(row[str(row["answer"])]))
-            if not generated:
+            try:
+                article  = str(row["article"])
+                ans_col  = str(row["answer"])
+                if ans_col not in ["A","B","C","D"]:
+                    continue
+                correct  = str(row[ans_col])
+                wrong    = [str(row[o]) for o in ["A","B","C","D"] if o != ans_col]
+                ref_q    = str(row["question"])
+
+                # Question generation
+                generated = None
+                for sent in split_sentences(article):
+                    q, _ = generate_wh_question(sent)
+                    if q:
+                        generated = q
+                        break
+                if generated:
+                    q_refs.append(ref_q)
+                    q_hyps.append(generated)
+
+                # Distractor generation — traditional
+                trad_d = run_distractor_generation(article, correct, model_type="traditional")
+                if trad_d and wrong:
+                    d_refs_trad.append(" ".join(wrong))
+                    d_hyps_trad.append(" ".join(trad_d[:3]))
+
+                # Distractor generation — neural (SentenceTransformer)
+                if sentence_model is not None:
+                    neural_d = run_distractor_generation(article, correct, model_type="bert")
+                    if neural_d and wrong:
+                        d_refs_neural.append(" ".join(wrong))
+                        d_hyps_neural.append(" ".join(neural_d[:3]))
+            except Exception as row_err:
+                print(f"[NLG row error] {row_err}")
                 continue
 
-            ref_tokens  = nltk.word_tokenize(reference.lower())
-            gen_tokens  = nltk.word_tokenize(generated.lower())
-
-            bleu = sentence_bleu([ref_tokens], gen_tokens, smoothing_function=smoother)
-            bleu_scores.append(bleu)
-
-            meteor = meteor_score([ref_tokens], gen_tokens)
-            meteor_scores.append(meteor)
-
-            rouge = scorer.score(reference, generated)
-            r1_scores.append(rouge["rouge1"].fmeasure)
-            r2_scores.append(rouge["rouge2"].fmeasure)
-            rL_scores.append(rouge["rougeL"].fmeasure)
-
-        if not bleu_scores:
-            return None
-
         return {
-            "BLEU":    round(float(np.mean(bleu_scores)), 4),
-            "ROUGE-1": round(float(np.mean(r1_scores)), 4),
-            "ROUGE-2": round(float(np.mean(r2_scores)), 4),
-            "ROUGE-L": round(float(np.mean(rL_scores)), 4),
-            "METEOR":  round(float(np.mean(meteor_scores)), 4),
-            "samples": len(bleu_scores),
+            "question_generation": _score_texts(q_refs, q_hyps, nltk, rouge_sc, smoother),
+            "distractors_traditional": _score_texts(d_refs_trad, d_hyps_trad, nltk, rouge_sc, smoother),
+            "distractors_neural": _score_texts(d_refs_neural, d_hyps_neural, nltk, rouge_sc, smoother) if sentence_model is not None else None,
         }
     except Exception as e:
         import traceback
@@ -692,7 +732,7 @@ async def get_metrics():
             }]
 
         # NLG generation metrics (BLEU / ROUGE / METEOR)
-        nlg_metrics = compute_nlg_metrics(n_samples=100)
+        nlg_metrics = compute_nlg_metrics(n_samples=20)
 
         return {
             "binary_metrics":   binary.to_dict(orient="records"),

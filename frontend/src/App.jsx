@@ -766,22 +766,33 @@ export default function BrainBlingTemplate() {
 
               <h3 className="text-xl font-black mb-2">NLG Evaluation — BLEU / ROUGE / METEOR</h3>
               {metrics.nlg_metrics ? (
-                <div className="border-2 border-black bg-[#7cf5d2] p-5 mb-6">
-                  <p className="text-xs font-bold mb-3 text-gray-600">Evaluated on {metrics.nlg_metrics.samples} RACE dev samples — generated vs. reference questions</p>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-                    {[
-                      { label: "BLEU", value: metrics.nlg_metrics.BLEU },
-                      { label: "ROUGE-1", value: metrics.nlg_metrics["ROUGE-1"] },
-                      { label: "ROUGE-2", value: metrics.nlg_metrics["ROUGE-2"] },
-                      { label: "ROUGE-L", value: metrics.nlg_metrics["ROUGE-L"] },
-                      { label: "METEOR", value: metrics.nlg_metrics.METEOR },
-                    ].map((m) => (
-                      <div key={m.label} className="border-2 border-black bg-white p-3 shadow-[3px_3px_0px_#000] text-center">
-                        <p className="text-xs font-black text-gray-500 mb-1">{m.label}</p>
-                        <p className="text-2xl font-black">{m.value}</p>
+                <div className="mb-6 space-y-4">
+                  {[
+                    { key: "question_generation", label: "Question Generation (Rule-based + ML Ranking)", color: "bg-[#7cf5d2]" },
+                    { key: "distractors_traditional", label: "Distractor Generation — Traditional (RandomForest)", color: "bg-[#ffc736]" },
+                    { key: "distractors_neural", label: "Distractor Generation — Neural (SentenceTransformer)", color: "bg-[#bd83dd]" },
+                  ].map(({ key, label, color }) => {
+                    const m = metrics.nlg_metrics[key];
+                    if (!m) return (
+                      <div key={key} className={`border-2 border-black ${color} p-4`}>
+                        <p className="font-black mb-1">{label}</p>
+                        <p className="text-sm text-gray-600">Not available (model not loaded)</p>
                       </div>
-                    ))}
-                  </div>
+                    );
+                    return (
+                      <div key={key} className={`border-2 border-black ${color} p-4`}>
+                        <p className="font-black mb-3">{label} <span className="text-xs font-normal text-gray-600">({m.samples} samples)</span></p>
+                        <div className="grid grid-cols-5 gap-2">
+                          {["BLEU","ROUGE-1","ROUGE-2","ROUGE-L","METEOR"].map(metric => (
+                            <div key={metric} className="border-2 border-black bg-white p-2 shadow-[2px_2px_0px_#000] text-center">
+                              <p className="text-xs font-black text-gray-500">{metric}</p>
+                              <p className="text-lg font-black">{m[metric]}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="border-2 border-black bg-white p-4 mb-6 text-gray-500 font-bold">
