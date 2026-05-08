@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"python -m uvicorn app:app --reload --port 5000 --app-dir ../api\" --names \"frontend,backend\" --prefix-colors \"cyan,magenta\"",
+    "dev": "concurrently \"vite\" \"python -m uvicorn app:app --reload --port 8000 --app-dir ../api\" --names \"frontend,backend\" --prefix-colors \"cyan,magenta\"",
     "frontend": "vite",
-    "backend": "python -m uvicorn app:app --reload --port 5000 --app-dir ../api",
+    "backend": "python -m uvicorn app:app --reload --port 8000 --app-dir ../api",
     "build": "vite build",
     "preview": "vite preview"
   },

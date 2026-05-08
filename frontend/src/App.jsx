@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 
 // API Configuration
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 function Icon({ name, size = 24 }) {
   const common = {
@@ -80,7 +80,7 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
-  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [] });
+  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
   const [correctAnswer, setCorrectAnswer] = useState("");
@@ -96,7 +96,7 @@ export default function BrainBlingTemplate() {
   useEffect(() => {
     fetch(`${API_BASE_URL}/metrics`)
       .then((r) => r.json())
-      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [] }))
+      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [], nlg_metrics: data.nlg_metrics || null }))
       .catch((error) => {
         console.error("Failed to load metrics:", error);
         setMessage("Failed to load model metrics. Please ensure the backend is running.");
@@ -763,6 +763,31 @@ export default function BrainBlingTemplate() {
                   </tbody>
                 </table>
               </div>
+
+              <h3 className="text-xl font-black mb-2">NLG Evaluation — BLEU / ROUGE / METEOR</h3>
+              {metrics.nlg_metrics ? (
+                <div className="border-2 border-black bg-[#7cf5d2] p-5 mb-6">
+                  <p className="text-xs font-bold mb-3 text-gray-600">Evaluated on {metrics.nlg_metrics.samples} RACE dev samples — generated vs. reference questions</p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                    {[
+                      { label: "BLEU", value: metrics.nlg_metrics.BLEU },
+                      { label: "ROUGE-1", value: metrics.nlg_metrics["ROUGE-1"] },
+                      { label: "ROUGE-2", value: metrics.nlg_metrics["ROUGE-2"] },
+                      { label: "ROUGE-L", value: metrics.nlg_metrics["ROUGE-L"] },
+                      { label: "METEOR", value: metrics.nlg_metrics.METEOR },
+                    ].map((m) => (
+                      <div key={m.label} className="border-2 border-black bg-white p-3 shadow-[3px_3px_0px_#000] text-center">
+                        <p className="text-xs font-black text-gray-500 mb-1">{m.label}</p>
+                        <p className="text-2xl font-black">{m.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="border-2 border-black bg-white p-4 mb-6 text-gray-500 font-bold">
+                  NLG metrics unavailable — ensure dev.csv is in data/raw/
+                </div>
+              )}
 
               <button
                 onClick={() => { setScreen("landing"); setSelected(""); setChecked(false); setArticle(""); setMessage("Paste an article or load the sample to begin."); }}

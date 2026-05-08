@@ -73,11 +73,10 @@ def load_models():
                 onehot_vectorizer = pickle.load(f)
             print("[OK] onehot_vectorizer loaded")
 
-        # BERT for answer verification
+        # BERT for answer verification (load first — needs most memory)
         if os.path.exists(MODEL_A_NEURAL):
             try:
                 from transformers import AutoTokenizer, AutoModelForMultipleChoice
-                import torch
                 bert_tokenizer = AutoTokenizer.from_pretrained(MODEL_A_NEURAL)
                 bert_model = AutoModelForMultipleChoice.from_pretrained(MODEL_A_NEURAL)
                 bert_model.eval()
@@ -85,7 +84,7 @@ def load_models():
             except Exception as e:
                 print(f"[WARN] BERT not loaded: {e}")
 
-        # Sentence Transformer for distractor + hint
+        # Sentence Transformer for distractor + hint (load second — smaller model)
         if os.path.exists(MODEL_B_NEURAL):
             try:
                 from sentence_transformers import SentenceTransformer
@@ -254,7 +253,7 @@ def extract_candidates(article, correct_answer):
 def augment_candidates(correct_answer, article):
     extra = []
     words = correct_answer.split()
-    # Only apply negation/morphological variants for short answers (phrase-level)
+    # Only apply negation for short answers - REMOVED morphological variants (they produce poor distractors)
     if len(words) <= 4:
         extra.append('not ' + correct_answer)
         if any(c.isdigit() for c in correct_answer):
@@ -263,17 +262,6 @@ def augment_candidates(correct_answer, article):
                 if variant != correct_answer:
                     extra.append(variant)
                     break
-        if len(words) == 1 and len(words[0]) > 4:
-            word = words[0].lower()
-            for prefix in ['un', 're', 'over', 'under', 'mis']:
-                if not word.startswith(prefix):
-                    extra.append(prefix + word)
-            if word.endswith('ing'):
-                extra.append(word[:-3] + 'ed')
-            elif word.endswith('ed'):
-                extra.append(word[:-2] + 'ing')
-            elif word.endswith('ly'):
-                extra.append(word[:-2])
     # Top frequent content words from article always added
     article_words = article.lower().split()
     word_freq = Counter(article_words)
@@ -356,6 +344,29 @@ def extract_features(candidates, correct_answer, article):
 
 def run_distractor_generation(article, correct_answer, model_type="traditional"):
     candidates = list(set(extract_candidates(article, correct_answer) + augment_candidates(correct_answer, article)))
+    
+    # Filter out correct answer and morphological variants
+    correct_lower = correct_answer.lower().strip()
+    prefixes = ['un', 'under', 'over', 'mis', 're', 'dis', 'non', 'anti', 'not ']
+
+    def is_bad_candidate(c):
+        c_lower = c.lower().strip()
+        # Exact match
+        if c_lower == correct_lower:
+            return True
+        # Morphological variant: prefix + correct answer
+        if any(c_lower == p + correct_lower for p in prefixes):
+            return True
+        # Substring: correct answer appears inside candidate string
+        if correct_lower in c_lower:
+            return True
+        # Candidate appears inside correct answer
+        if c_lower in correct_lower and len(c_lower) > 2:
+            return True
+        return False
+
+    candidates = [c for c in candidates if not is_bad_candidate(c)]
+    
     if not candidates:
         return []
 
@@ -588,6 +599,64 @@ async def health_check():
     }
 
 
+def compute_nlg_metrics(n_samples: int = 100):
+    """Compute BLEU, ROUGE, METEOR scores by comparing generated questions to RACE references."""
+    try:
+        import nltk
+        from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+        from nltk.translate.meteor_score import meteor_score
+        from rouge_score import rouge_scorer
+
+        dev_path = f"{DATA_DIR}/raw/dev.csv"
+        if not os.path.exists(dev_path):
+            return None
+
+        df = pd.read_csv(dev_path).dropna(subset=["article", "question"]).head(n_samples)
+        scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
+        smoother = SmoothingFunction().method1
+
+        bleu_scores, meteor_scores = [], []
+        r1_scores, r2_scores, rL_scores = [], [], []
+
+        for _, row in df.iterrows():
+            article   = str(row["article"])
+            reference = str(row["question"])
+            generated, _ = generate_wh_question(article, str(row[str(row["answer"])]))
+            if not generated:
+                continue
+
+            ref_tokens  = nltk.word_tokenize(reference.lower())
+            gen_tokens  = nltk.word_tokenize(generated.lower())
+
+            bleu = sentence_bleu([ref_tokens], gen_tokens, smoothing_function=smoother)
+            bleu_scores.append(bleu)
+
+            meteor = meteor_score([ref_tokens], gen_tokens)
+            meteor_scores.append(meteor)
+
+            rouge = scorer.score(reference, generated)
+            r1_scores.append(rouge["rouge1"].fmeasure)
+            r2_scores.append(rouge["rouge2"].fmeasure)
+            rL_scores.append(rouge["rougeL"].fmeasure)
+
+        if not bleu_scores:
+            return None
+
+        return {
+            "BLEU":    round(float(np.mean(bleu_scores)), 4),
+            "ROUGE-1": round(float(np.mean(r1_scores)), 4),
+            "ROUGE-2": round(float(np.mean(r2_scores)), 4),
+            "ROUGE-L": round(float(np.mean(rL_scores)), 4),
+            "METEOR":  round(float(np.mean(meteor_scores)), 4),
+            "samples": len(bleu_scores),
+        }
+    except Exception as e:
+        import traceback
+        print(f"[NLG Metrics ERROR] {e}")
+        traceback.print_exc()
+        return None
+
+
 @app.get("/metrics")
 async def get_metrics():
     try:
@@ -612,10 +681,14 @@ async def get_metrics():
                 "Note":      "Model loaded. Run evaluate_bert_vs_traditional.py on Colab for scores."
             }]
 
+        # NLG generation metrics (BLEU / ROUGE / METEOR)
+        nlg_metrics = compute_nlg_metrics(n_samples=100)
+
         return {
             "binary_metrics":   binary.to_dict(orient="records"),
             "ensemble_metrics": ensemble.to_dict(orient="records"),
-            "neural_metrics":   bert_rows
+            "neural_metrics":   bert_rows,
+            "nlg_metrics":      nlg_metrics
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -722,7 +795,7 @@ async def generate_distractors_endpoint(input: QuestionInput):
         correct_idx    = ord(correct_letter) - ord('A')
         correct_text   = input.options[correct_idx] if correct_idx < len(input.options) else input.options[0]
 
-        distractors = run_distractor_generation(input.article, correct_text)
+        distractors = run_distractor_generation(input.article, correct_text, model_type=input.model_type or "traditional")
         while len(distractors) < 3:
             distractors.append(f"option {len(distractors)+1}")
 
