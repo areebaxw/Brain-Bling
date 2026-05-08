@@ -494,31 +494,41 @@ def run_traditional_ml_verification(article, question, chosen_option):
         X        = sp.hstack([onehot, lex_sp], format='csr')
 
         model = None
-        if ensemble_models is not None:
-            if isinstance(ensemble_models, dict):
-                model = (ensemble_models.get('soft_voting')
-                         or ensemble_models.get('Soft Voting')
-                         or ensemble_models.get('hard_voting')
-                         or ensemble_models.get('Hard Voting')
-                         or list(ensemble_models.values())[0])
-            else:
-                model = ensemble_models
-        elif trained_models is not None:
+        if ensemble_models is not None and isinstance(ensemble_models, dict):
+            # stacking_meta_clf is the actual trained sklearn model
+            # soft_voting_proba / hard_voting_proba are pre-computed arrays, skip them
+            for key in ('stacking_meta_clf', 'Stacking', 'stacking'):
+                candidate = ensemble_models.get(key)
+                if candidate is not None and hasattr(candidate, 'predict_proba'):
+                    model = candidate
+                    break
+        if model is None and trained_models is not None:
             if isinstance(trained_models, dict):
-                model = (trained_models.get('Logistic Regression')
-                         or trained_models.get('logistic_regression')
-                         or list(trained_models.values())[0])
-            else:
+                for key in ('Logistic Regression', 'logistic_regression', 'LR'):
+                    candidate = trained_models.get(key)
+                    if candidate is not None and hasattr(candidate, 'predict_proba'):
+                        model = candidate
+                        break
+                if model is None:
+                    for v in trained_models.values():
+                        if hasattr(v, 'predict_proba'):
+                            model = v
+                            break
+            elif hasattr(trained_models, 'predict_proba'):
                 model = trained_models
 
         if model is None:
             return None
 
+        # Check if it's actually a sklearn model
         if hasattr(model, 'predict_proba'):
             proba = model.predict_proba(X)
             conf  = float(proba[0][1]) if proba.shape[1] > 1 else float(proba[0][0])
-        else:
+        elif hasattr(model, 'predict'):
             conf = float(model.predict(X)[0])
+        else:
+            print(f"[TRAD ML verify ERROR] Invalid model type: {type(model)}")
+            return None
 
         print(f"[TRAD ML verify] confidence={conf:.3f}")
         return float(np.clip(conf, 0.05, 0.95))
