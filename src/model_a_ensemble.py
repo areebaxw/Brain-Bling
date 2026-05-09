@@ -160,21 +160,25 @@ def run_phase5():
     option_metrics  = []
 
     # individual model results from Phase 3
-    model_name_map = {
-        'LogisticRegression': 'Logistic Regression',
-        'SVM': 'SVM',
-        'NaiveBayes': 'Naive Bayes',
-        'RandomForest': 'Random Forest'
-    }
-    for key, label in model_name_map.items():
-        y_pred, y_proba = predictions[key]
-        binary_metrics.append(evaluate_binary(y_val, y_pred, y_proba, label + ' (Base)'))
-        option_metrics.append(evaluate_option_selection(y_proba, y_val, metadata, label + ' (Base)'))
+    # predictions[name] = full predict_proba array of shape (n, 2)
+    # extract y_pred from argmax, y_proba from column 1
+    base_model_names = ['Logistic Regression', 'SVM', 'Naive Bayes', 'Random Forest']
+    valid_predictions = {}
+    for name in base_model_names:
+        if name not in predictions or predictions[name] is None:
+            print(f"[WARN] {name} predictions not found, skipping")
+            continue
+        proba_2d = predictions[name]          # shape (n, 2)
+        y_proba  = proba_2d[:, 1]            # positive class probability
+        y_pred   = proba_2d.argmax(axis=1)   # predicted class
+        valid_predictions[name] = (y_pred, y_proba)
+        binary_metrics.append(evaluate_binary(y_val, y_pred, y_proba, name + ' (Base)'))
+        option_metrics.append(evaluate_option_selection(y_proba, y_val, metadata, name + ' (Base)'))
 
     # soft voting
     print("\n[SOFT VOTING]")
     print("=" * 80)
-    sv_proba = np.vstack([pred[1] for pred in predictions.values()]).mean(axis=0)
+    sv_proba = np.vstack([p[1] for p in valid_predictions.values()]).mean(axis=0)
     sv_pred  = (sv_proba >= 0.5).astype(int)
     print(classification_report(y_val, sv_pred, target_names=['Non-Answer', 'Answer'], digits=4))
     binary_metrics.append(evaluate_binary(y_val, sv_pred, sv_proba, 'Soft Voting'))
@@ -183,11 +187,11 @@ def run_phase5():
     # hard voting
     print("\n[HARD VOTING]")
     print("=" * 80)
-    preds_stack = np.vstack([pred[0] for pred in predictions.values()])
+    preds_stack = np.vstack([p[0] for p in valid_predictions.values()])
     hv_pred = np.apply_along_axis(
         lambda x: np.bincount(x.astype(int), minlength=2).argmax(), axis=0, arr=preds_stack
     )
-    hv_proba = np.vstack([pred[1] for pred in predictions.values()]).mean(axis=0)
+    hv_proba = np.vstack([p[1] for p in valid_predictions.values()]).mean(axis=0)
     print(classification_report(y_val, hv_pred, target_names=['Non-Answer', 'Answer'], digits=4))
     binary_metrics.append(evaluate_binary(y_val, hv_pred, hv_proba, 'Hard Voting'))
     option_metrics.append(evaluate_option_selection(hv_proba, y_val, metadata, 'Hard Voting'))
@@ -197,7 +201,7 @@ def run_phase5():
     print("=" * 80)
     n    = len(y_val)
     half = n // 2
-    meta_X       = np.column_stack([pred[1] for pred in predictions.values()])
+    meta_X       = np.column_stack([p[1] for p in valid_predictions.values()])
     meta_X_train = meta_X[:half]
     y_meta_train = y_val[:half]
     meta_X_val   = meta_X[half:]

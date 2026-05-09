@@ -1,0 +1,16 @@
+Task,Metric,Score
+Question Generation,BLEU,0.0192
+Question Generation,ROUGE-1,0.173
+Question Generation,ROUGE-2,0.0432
+Question Generation,ROUGE-L,0.1472
+Question Generation,METEOR,0.1162
+Distractor Generation,BLEU,0.0004
+Distractor Generation,ROUGE-1,0.0537
+Distractor Generation,ROUGE-2,0.0
+Distractor Generation,ROUGE-L,0.0537
+Distractor Generation,METEOR,0.0146
+Hint Generation,BLEU,0.4806
+Hint Generation,ROUGE-1,0.568
+Hint Generation,ROUGE-2,0.488
+Hint Generation,ROUGE-L,0.5438
+Hint Generation,METEOR,0.5254

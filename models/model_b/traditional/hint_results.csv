@@ -1,2 +1,2 @@
-model,task,val_samples,accuracy,positive_rate
-LogisticRegression,hint_sentence_scoring,9332,0.7939,0.0089
+model,task,val_samples,accuracy,positive_rate,precision_at_3
+LogisticRegression,hint_sentence_scoring,18714,0.9974,0.037,0.0467

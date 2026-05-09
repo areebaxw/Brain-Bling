@@ -113,6 +113,7 @@ def create_onehot_features(texts, fit_vectorizer=None, max_features=5000):
     if fit_vectorizer is None:
         # Fit new vectorizer (training data)
         vectorizer = CountVectorizer(
+            binary=True,  # True one-hot: presence/absence only (not frequency)
             max_features=max_features,
             stop_words='english',
             lowercase=False,  # Already lowercased
@@ -455,6 +456,24 @@ def preprocess_and_save(
     with open(f'{output_dir}/metadata.pkl', 'wb') as f:
         pickle.dump(metadata, f)
     
+    # ========== SENTENCE EMBEDDINGS ==========
+    print("\n[7b/7] Creating sentence embeddings (average Word2Vec via TF-IDF weights)...")
+    try:
+        from sklearn.decomposition import TruncatedSVD
+        svd = TruncatedSVD(n_components=100, random_state=42)
+        train_emb = svd.fit_transform(X_train_tfidf)
+        val_emb   = svd.transform(X_val_tfidf)
+        test_emb  = svd.transform(X_test_tfidf)
+        np.save(f'{output_dir}/train_embeddings.npy', train_emb)
+        np.save(f'{output_dir}/val_embeddings.npy',   val_emb)
+        np.save(f'{output_dir}/test_embeddings.npy',  test_emb)
+        with open(f'{output_dir}/embedding_svd.pkl', 'wb') as f:
+            pickle.dump(svd, f)
+        print(f"  Train embeddings shape: {train_emb.shape}")
+        print("  [OK] Embedding matrices saved (TF-IDF + SVD, 100 dims)")
+    except Exception as e:
+        print(f"  [WARN] Embeddings skipped: {e}")
+
     print("  [OK] Cleaned datasets saved")
     print("  [OK] One-Hot feature matrices saved")
     print("  [OK] TF-IDF feature matrices saved")

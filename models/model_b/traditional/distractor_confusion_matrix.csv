@@ -1,0 +1,7 @@
+Metric,Value
+True Positives (F1>0.1),55.0
+False Positives (F1<=0.1),45.0
+False Negatives (skipped),0.0
+Precision (avg),0.1411
+Recall (avg),0.1356
+F1 (avg),0.132

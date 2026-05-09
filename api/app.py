@@ -40,13 +40,14 @@ ensemble_models = None
 distractor_model = None
 hint_model_bundle = None
 onehot_vectorizer = None
+question_ranker = None
 bert_model = None
 bert_tokenizer = None
 sentence_model = None
 
 def load_models():
     global trained_models, ensemble_models, distractor_model, hint_model_bundle, onehot_vectorizer
-    global bert_model, bert_tokenizer, sentence_model
+    global question_ranker, bert_model, bert_tokenizer, sentence_model
     try:
         if os.path.exists(f"{MODEL_A_TRAD}/trained_models.pkl"):
             with open(f"{MODEL_A_TRAD}/trained_models.pkl", "rb") as f:
@@ -72,6 +73,11 @@ def load_models():
             with open(f"{DATA_DIR}/processed/onehot_vectorizer.pkl", "rb") as f:
                 onehot_vectorizer = pickle.load(f)
             print("[OK] onehot_vectorizer loaded")
+
+        if os.path.exists(f"{MODEL_B_TRAD}/question_ranker.pkl"):
+            with open(f"{MODEL_B_TRAD}/question_ranker.pkl", "rb") as f:
+                question_ranker = pickle.load(f)
+            print("[OK] question_ranker loaded")
 
         # BERT for answer verification (load first — needs most memory)
         if os.path.exists(MODEL_A_NEURAL):
@@ -190,25 +196,48 @@ def generate_wh_question(sentence):
     return None, None
 
 
+def _ranker_features(question, article, answer):
+    """Extract 8 fluency+relevance features matching model_question_ranker.py."""
+    q_words = set(re.sub(r'[^a-z ]', '', question.lower()).split()) - STOPWORDS
+    a_words = set(re.sub(r'[^a-z ]', '', article.lower()).split()) - STOPWORDS
+    overlap      = len(q_words & a_words) / max(len(q_words), 1)
+    q_len        = len(question.split())
+    length_score = 1.0 if 8 <= q_len <= 15 else (0.7 if q_len < 8 else 0.5)
+    wh_words     = {'who', 'what', 'where', 'when', 'why', 'how', 'which'}
+    has_wh       = float(any(w in question.lower() for w in wh_words))
+    a_len        = len(answer.split())
+    ans_len_score = 1.0 if 1 <= a_len <= 3 else 0.5
+    is_proper    = float(len(answer) > 0 and answer[0].isupper())
+    ans_in_art   = float(answer.lower() in article.lower())
+    ends_q       = float(question.strip().endswith('?'))
+    has_blank    = float('_______' in question)
+    return [overlap, length_score, has_wh, ans_len_score,
+            is_proper, ans_in_art, ends_q, has_blank]
+
+
 def rank_questions(questions_with_answers, article):
     """
-    Rank candidate questions by fluency and relevance features.
-    Uses keyword overlap with article as a simple relevance score.
+    Rank candidate questions using trained Random Forest ranker.
+    Falls back to heuristic scoring if ranker not loaded.
     """
-    article_words = set(clean(article).split()) - STOPWORDS
     scored = []
-    for question, answer in questions_with_answers:
-        q_words = set(clean(question).split()) - STOPWORDS
-        # Relevance: keyword overlap with article
-        overlap = len(q_words & article_words) / max(len(q_words), 1)
-        # Fluency: prefer questions with 8-15 words
-        q_len = len(question.split())
-        length_score = 1.0 if 8 <= q_len <= 15 else 0.5
-        # Answer quality: prefer 1-3 word answers
-        a_len = len(answer.split())
-        answer_score = 1.0 if 1 <= a_len <= 3 else 0.5
-        score = overlap * length_score * answer_score
-        scored.append((question, answer, score))
+    if question_ranker is not None:
+        # Step 3 — ML ranking using trained RF classifier
+        feats = np.array([_ranker_features(q, article, a)
+                          for q, a in questions_with_answers], dtype=np.float32)
+        probs = question_ranker.predict_proba(feats)[:, 1]
+        for (q, a), score in zip(questions_with_answers, probs):
+            scored.append((q, a, float(score)))
+    else:
+        # Fallback heuristic
+        article_words = set(clean(article).split()) - STOPWORDS
+        for question, answer in questions_with_answers:
+            q_words = set(clean(question).split()) - STOPWORDS
+            overlap  = len(q_words & article_words) / max(len(q_words), 1)
+            q_len    = len(question.split())
+            length_score  = 1.0 if 8 <= q_len <= 15 else 0.5
+            answer_score  = 1.0 if 1 <= len(answer.split()) <= 3 else 0.5
+            scored.append((question, answer, overlap * length_score * answer_score))
     scored.sort(key=lambda x: x[2], reverse=True)
     return scored
 
@@ -657,6 +686,8 @@ def compute_nlg_metrics(n_samples: int = 100):
         q_refs, q_hyps = [], []
         d_refs_trad, d_hyps_trad = [], []
         d_refs_neural, d_hyps_neural = [], []
+        h_refs, h_hyps = [], []
+        _hint_mdl = hint_model_bundle.get('hint_model') if isinstance(hint_model_bundle, dict) else hint_model_bundle
 
         for _, row in df.iterrows():
             try:
@@ -691,19 +722,75 @@ def compute_nlg_metrics(n_samples: int = 100):
                     if neural_d and wrong:
                         d_refs_neural.append(" ".join(wrong))
                         d_hyps_neural.append(" ".join(neural_d[:3]))
+
+                # Hint generation
+                _sents = split_sentences(article)
+                if _sents and correct:
+                    _refs_h = [s for s in _sents if correct.lower() in s.lower()]
+                    if not _refs_h:
+                        _ct = set(correct.lower().split()) - STOPWORDS
+                        _refs_h = [s for s in _sents if len(set(s.lower().split()) & _ct) / max(len(_ct), 1) >= 0.5]
+                    if _refs_h:
+                        if _hint_mdl is not None:
+                            _tot = len(_sents)
+                            _q   = set(ref_q.lower().split()) - STOPWORDS
+                            _a   = set(correct.lower().split()) - STOPWORDS
+                            _ft  = []
+                            for _i, _s in enumerate(_sents):
+                                _sw = set(_s.lower().split()) - STOPWORDS
+                                _ft.append([len(_sw & _q)/max(len(_q),1), len(_sw & _a)/max(len(_a),1),
+                                            _i/max(_tot-1,1), len(_s.split()), min(len(_s.split())/30.0,1.0),
+                                            1 if _i==0 else 0, 1 if _i==_tot-1 else 0])
+                            _probs = _hint_mdl.predict_proba(np.array(_ft))[:,1]
+                            _gen   = [_sents[j] for j in np.argsort(_probs)[::-1][:3]]
+                        else:
+                            _q   = set(ref_q.lower().split()) - STOPWORDS
+                            _gen = [s for _, s in sorted([(len(set(s.lower().split()) & _q), s) for s in _sents], reverse=True)[:3]]
+                        if _gen:
+                            h_refs.append(" ".join(_refs_h[:3]))
+                            h_hyps.append(" ".join(_gen))
             except Exception as row_err:
                 print(f"[NLG row error] {row_err}")
                 continue
 
         return {
-            "question_generation": _score_texts(q_refs, q_hyps, nltk, rouge_sc, smoother),
-            "distractors_traditional": _score_texts(d_refs_trad, d_hyps_trad, nltk, rouge_sc, smoother),
-            "distractors_neural": _score_texts(d_refs_neural, d_hyps_neural, nltk, rouge_sc, smoother) if sentence_model is not None else None,
+            "question_generation":    _score_texts(q_refs,        q_hyps,        nltk, rouge_sc, smoother),
+            "distractors_traditional": _score_texts(d_refs_trad,   d_hyps_trad,   nltk, rouge_sc, smoother),
+            "distractors_neural":      _score_texts(d_refs_neural, d_hyps_neural, nltk, rouge_sc, smoother) if sentence_model is not None else None,
+            "hint_generation":         _score_texts(h_refs,        h_hyps,        nltk, rouge_sc, smoother),
         }
     except Exception as e:
         import traceback
         print(f"[NLG Metrics ERROR] {e}")
         traceback.print_exc()
+        return None
+
+
+def compute_confusion_matrices():
+    """4×4 option-level confusion matrix per model from predicted_options_val.csv."""
+    try:
+        from sklearn.metrics import confusion_matrix as sk_cm
+        pred_path = f"{MODEL_A_TRAD}/predicted_options_val.csv"
+        if not os.path.exists(pred_path):
+            return None
+        df      = pd.read_csv(pred_path)
+        labels  = ['A', 'B', 'C', 'D']
+        col_map = {
+            'Logistic Regression': 'pred_LogisticRegression',
+            'SVM':                 'pred_SVM',
+            'Naive Bayes':         'pred_NaiveBayes',
+            'Random Forest':       'pred_RandomForest',
+            'Soft Voting':         'pred_EnsembleSoftVoting',
+        }
+        result = {}
+        for name, col in col_map.items():
+            if col not in df.columns:
+                continue
+            cm = sk_cm(df['true_answer'], df[col], labels=labels)
+            result[name] = {'labels': labels, 'matrix': cm.tolist()}
+        return result
+    except Exception as e:
+        print(f"[Confusion Matrix ERROR] {e}")
         return None
 
 
@@ -732,13 +819,15 @@ async def get_metrics():
             }]
 
         # NLG generation metrics (BLEU / ROUGE / METEOR)
-        nlg_metrics = compute_nlg_metrics(n_samples=20)
+        nlg_metrics         = compute_nlg_metrics(n_samples=20)
+        confusion_matrices  = compute_confusion_matrices()
 
         return {
-            "binary_metrics":   binary.to_dict(orient="records"),
-            "ensemble_metrics": ensemble.to_dict(orient="records"),
-            "neural_metrics":   bert_rows,
-            "nlg_metrics":      nlg_metrics
+            "binary_metrics":      binary.to_dict(orient="records"),
+            "ensemble_metrics":    ensemble.to_dict(orient="records"),
+            "neural_metrics":      bert_rows,
+            "nlg_metrics":         nlg_metrics,
+            "confusion_matrices":  confusion_matrices,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -797,15 +886,28 @@ async def generate_race_quiz(input: QuestionInput):
 async def generate_quiz(input: ArticleInput):
     try:
         sentences = split_sentences(input.article)
-        
-        # Step 1 & 2: Generate Wh-questions from each sentence using templates
+
+        # Step 1 — Filter candidate sentences using One-Hot keyword overlap
+        candidate_sentences = sentences
+        if onehot_vectorizer is not None and len(sentences) > 5:
+            try:
+                art_vec  = onehot_vectorizer.transform([input.article])
+                sent_vecs = onehot_vectorizer.transform(sentences)
+                sims = cosine_similarity(sent_vecs, art_vec).flatten()
+                top_k = max(5, len(sentences) // 3)
+                top_idx = np.argsort(sims)[::-1][:top_k]
+                candidate_sentences = [sentences[i] for i in sorted(top_idx)]
+            except Exception:
+                candidate_sentences = sentences
+
+        # Step 2 — Apply Wh-word templates to candidate sentences
         candidates_qa = []
-        for sent in sentences:
+        for sent in candidate_sentences:
             q, a = generate_wh_question(sent)
             if q and a:
                 candidates_qa.append((q, a))
-        
-        # Step 3: Rank questions by fluency and relevance
+
+        # Step 3 — Rank questions using trained RF ranker (or heuristic fallback)
         if candidates_qa:
             ranked = rank_questions(candidates_qa, input.article)
             question = ranked[0][0]

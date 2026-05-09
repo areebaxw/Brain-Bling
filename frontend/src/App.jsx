@@ -80,7 +80,7 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
-  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null });
+  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
   const [correctAnswer, setCorrectAnswer] = useState("");
@@ -92,11 +92,12 @@ export default function BrainBlingTemplate() {
   });
   const [modelType, setModelType] = useState("");
   const [verifierResult, setVerifierResult] = useState(null);
+  const [selectedCMModel, setSelectedCMModel] = useState("Logistic Regression");
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/metrics`)
       .then((r) => r.json())
-      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [], nlg_metrics: data.nlg_metrics || null }))
+      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [], nlg_metrics: data.nlg_metrics || null, confusion_matrices: data.confusion_matrices || null }))
       .catch((error) => {
         console.error("Failed to load metrics:", error);
         setMessage("Failed to load model metrics. Please ensure the backend is running.");
@@ -571,7 +572,14 @@ export default function BrainBlingTemplate() {
                   <p className="text-center font-bold">No hints available. Please try generating hints again.</p>
                 )}
               </div>
-              <button className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000]">
+              <button
+                onClick={() => {
+                  setShowHintPopup(false);
+                  setChecked(true);
+                  setMessage(correctAnswer ? `✓ Correct answer revealed: ${correctAnswer}` : "Answer revealed!");
+                }}
+                className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:shadow-[6px_6px_0px_#000] transition"
+              >
                 Reveal Answer
               </button>
             </div>
@@ -771,6 +779,7 @@ export default function BrainBlingTemplate() {
                     { key: "question_generation", label: "Question Generation (Rule-based + ML Ranking)", color: "bg-[#7cf5d2]" },
                     { key: "distractors_traditional", label: "Distractor Generation — Traditional (RandomForest)", color: "bg-[#ffc736]" },
                     { key: "distractors_neural", label: "Distractor Generation — Neural (SentenceTransformer)", color: "bg-[#bd83dd]" },
+                    { key: "hint_generation", label: "Hint Generation — Traditional (Logistic Regression)", color: "bg-[#ff8bd8]" },
                   ].map(({ key, label, color }) => {
                     const m = metrics.nlg_metrics[key];
                     if (!m) return (
@@ -800,12 +809,69 @@ export default function BrainBlingTemplate() {
                 </div>
               )}
 
-              <button
-                onClick={() => { setScreen("landing"); setSelected(""); setChecked(false); setArticle(""); setMessage("Paste an article or load the sample to begin."); }}
-                className="border-2 border-black bg-[#ff8bd8] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition"
-              >
-                Start Over
-              </button>
+              <h3 className="text-xl font-black mb-2 mt-4">Confusion Matrix — Option Selection (A/B/C/D)</h3>
+              {metrics.confusion_matrices ? (
+                <>
+                  <div className="mb-3 flex gap-2 flex-wrap">
+                    {Object.keys(metrics.confusion_matrices).map(m => (
+                      <button key={m} onClick={() => setSelectedCMModel(m)}
+                        className={`border-2 border-black px-3 py-1 text-sm font-black shadow-[2px_2px_0px_#000] transition ${selectedCMModel === m ? "bg-[#ff4d00] text-white" : "bg-white hover:bg-[#ffc736]"}`}
+                      >{m}</button>
+                    ))}
+                  </div>
+                  {metrics.confusion_matrices[selectedCMModel] && (
+                    <div className="overflow-x-auto border-2 border-black mb-6">
+                      <table className="text-center text-sm">
+                        <thead>
+                          <tr>
+                            <th className="p-2 border-2 border-black bg-[#bd83dd] font-black">True↓ Pred→</th>
+                            {metrics.confusion_matrices[selectedCMModel].labels.map(l => (
+                              <th key={l} className="p-2 border-2 border-black bg-[#bd83dd] font-black">{l}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {metrics.confusion_matrices[selectedCMModel].matrix.map((row, ri) => {
+                            const rowSum = row.reduce((a, b) => a + b, 0);
+                            return (
+                              <tr key={ri}>
+                                <td className="p-2 border-2 border-black bg-[#ffc736] font-black">{metrics.confusion_matrices[selectedCMModel].labels[ri]}</td>
+                                {row.map((val, ci) => {
+                                  const intensity = rowSum > 0 ? val / rowSum : 0;
+                                  const bg = ri === ci ? `rgba(34,197,94,${0.2 + intensity * 0.7})` : `rgba(255,77,0,${intensity * 0.6})`;
+                                  return <td key={ci} className="p-3 border-2 border-black font-bold text-lg" style={{ backgroundColor: bg }}>{val}</td>;
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      <p className="text-xs text-gray-500 p-2">Rows = true label · Columns = predicted · Green diagonal = correct · Red = misclassified</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="border-2 border-black bg-white p-4 mb-6 text-gray-500 font-bold">Confusion matrix unavailable — predicted_options_val.csv not found.</div>
+              )}
+
+              <div className="flex gap-3 flex-wrap">
+                <button
+                  onClick={() => {
+                    const rows = [
+                      ["Question","Options","Correct Answer","Your Answer","Verification (ms)","Distractor (ms)","Hint (ms)","Total (ms)"],
+                      [question, options.join(" | "), correctAnswer, selected || "—", inferenceTimes.verification, inferenceTimes.distractor, inferenceTimes.hint, inferenceTimes.total]
+                    ];
+                    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+                    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+                    const a = document.createElement("a"); a.href = url; a.download = "session_results.csv"; a.click(); URL.revokeObjectURL(url);
+                  }}
+                  className="border-2 border-black bg-[#7cf5d2] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition"
+                >Export Session CSV</button>
+                <button
+                  onClick={() => { setScreen("landing"); setSelected(""); setChecked(false); setArticle(""); setMessage("Paste an article or load the sample to begin."); }}
+                  className="border-2 border-black bg-[#ff8bd8] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition"
+                >Start Over</button>
+              </div>
             </div>
           </div>
         </main>

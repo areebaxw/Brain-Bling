@@ -10,11 +10,72 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
+try:
+    from gensim.models import Word2Vec as _GensimW2V
+    _GENSIM = True
+except ImportError:
+    print("[WARN] pip install gensim for Word2Vec support")
+    _GENSIM = False
+
+import nltk
+nltk.download('punkt',    quiet=True)
+nltk.download('wordnet',  quiet=True)
+nltk.download('punkt_tab', quiet=True)
+from nltk.translate.bleu_score   import sentence_bleu, SmoothingFunction
+from nltk.translate.meteor_score import meteor_score as nltk_meteor
+try:
+    from rouge_score import rouge_scorer as _rs
+    _ROUGE = True
+except ImportError:
+    print("[WARN] pip install rouge-score for ROUGE metrics")
+    _ROUGE = False
+
+_sf = SmoothingFunction().method1
+
+def _bleu(hyp, ref):
+    h = hyp.lower().split(); r = ref.lower().split()
+    return sentence_bleu([r], h, smoothing_function=_sf) if h else 0.0
+
+def _rouge(hyp, ref):
+    if not _ROUGE:
+        return 0.0, 0.0, 0.0
+    s = _rs.RougeScorer(['rouge1','rouge2','rougeL'], use_stemmer=True).score(ref, hyp)
+    return s['rouge1'].fmeasure, s['rouge2'].fmeasure, s['rougeL'].fmeasure
+
+def _meteor(hyp, ref):
+    try:
+        return nltk_meteor([ref.lower().split()], hyp.lower().split())
+    except Exception:
+        return 0.0
+
 print("Loading datasets...")
-train_df = pd.read_csv('/content/drive/MyDrive/raw/train.csv')
+train_df = pd.read_csv('/content/drive/MyDrive/data/raw/train.csv')
 print(f"Train dataset loaded: {train_df.shape}")
-val_df   = pd.read_csv('/content/drive/MyDrive/raw/dev.csv')
+val_df   = pd.read_csv('/content/drive/MyDrive/data/raw/dev.csv')
 print(f"Val dataset loaded: {val_df.shape}")
+
+# ── Train Word2Vec on RACE corpus ────────────────────────────────────────
+print("\n[Word2Vec] Training on RACE training corpus...")
+if _GENSIM:
+    try:
+        _w2v_sents = []
+        for _art in train_df['article'].dropna():
+            _toks = re.findall(r'\b[a-zA-Z]{2,}\b', _art.lower())
+            if _toks:
+                _w2v_sents.append(_toks)
+        w2v_model = _GensimW2V(
+            sentences=_w2v_sents, vector_size=100, window=5,
+            min_count=3, workers=4, epochs=5, seed=42
+        )
+        print(f"[Word2Vec] Trained — vocab size: {len(w2v_model.wv)} | sentences: {len(_w2v_sents)}")
+        W2V_AVAILABLE = True
+    except Exception as _e:
+        print(f"[Word2Vec] Training failed: {_e} — using One-Hot only")
+        w2v_model     = None
+        W2V_AVAILABLE = False
+else:
+    w2v_model     = None
+    W2V_AVAILABLE = False
 
 def split_into_sentences(text):
     sentences = re.split(r'[.!?]+', text)
@@ -181,8 +242,8 @@ def extract_features(candidates, correct_answer, article, use_onehot=True, oneho
     try:
         if use_onehot and onehot_vectorizer is not None:
             # Use one-hot encoding (primary method per constraints)
-            cand_vecs = onehot_vectorizer.transform(candidates + [correct_answer])
-            corr_vec = onehot_vectorizer.transform([correct_answer])
+            cand_vecs = onehot_vectorizer.transform(candidates)
+            corr_vec  = onehot_vectorizer.transform([correct_answer])
             cos_sims = cosine_similarity(cand_vecs, corr_vec).ravel()
         else:
             # Use TF-IDF fitted on article context for better IDF weights
@@ -315,6 +376,24 @@ def train_ranker(training_data, labels, use_onehot=True, onehot_vectorizer=None)
     rf.fit(X, y)
     return rf
 
+def get_word2vec_candidates(answer, top_n=10):
+    """
+    Retrieve top-N Word2Vec nearest neighbours for the correct answer.
+    Returns words NOT identical to the correct answer — semantic distractors
+    not necessarily extractable from the passage (per spec Section 5.4).
+    """
+    if not W2V_AVAILABLE or w2v_model is None:
+        return []
+    tokens     = re.findall(r'\b[a-zA-Z]{2,}\b', answer.lower())
+    candidates = set()
+    for token in tokens:
+        if token in w2v_model.wv:
+            for word, _sim in w2v_model.wv.most_similar(token, topn=top_n):
+                if word.lower() not in answer.lower() and word not in STOPWORDS and len(word) > 2:
+                    candidates.add(word)
+    return list(candidates)
+
+
 def diversity_penalty(candidate, selected_distractors):
     """
     Compute similarity between candidate and already-selected distractors.
@@ -342,6 +421,9 @@ def generate_distractors_ml(ranker, article, correct_answer, top_k=3, use_onehot
     candidates = extract_candidates(article, correct_answer)
     # Augment with string manipulation variants
     candidates = list(set(candidates + augment_candidates(correct_answer, article)))
+    # Expand with Word2Vec nearest neighbours (semantic candidates outside passage)
+    if W2V_AVAILABLE:
+        candidates = list(set(candidates + get_word2vec_candidates(correct_answer, top_n=10)))
     
     if len(candidates) == 0:
         return [], onehot_vectorizer
@@ -494,9 +576,94 @@ print(f"\n[4/4] Results Summary (token-level F1 on {len(results_df)} samples):")
 print(results_df[['ml_precision', 'ml_recall', 'ml_f1']].mean())
 print(f"Partial-Match Accuracy (F1>0.1): {evaluate_accuracy(val_df.head(VAL_SAMPLE_SIZE), ranker, use_onehot=USE_ONEHOT, onehot_vectorizer=onehot_vectorizer):.4f}")
 
+# Confusion Matrix: classify each distractor as TP/FP/FN based on F1 threshold
+tp = int((results_df['ml_f1'] > 0.1).sum())   # at least partial match
+fp = int((results_df['ml_f1'] <= 0.1).sum())   # no meaningful overlap
+fn = len(val_df.head(VAL_SAMPLE_SIZE)) - len(results_df)  # skipped rows
+tn = 0  # not applicable for generation (no true negatives)
+precision_agg = results_df['ml_precision'].mean()
+recall_agg    = results_df['ml_recall'].mean()
+f1_agg        = results_df['ml_f1'].mean()
+
+conf_matrix = pd.DataFrame({
+    'Metric': ['True Positives (F1>0.1)', 'False Positives (F1<=0.1)',
+               'False Negatives (skipped)', 'Precision (avg)', 'Recall (avg)', 'F1 (avg)'],
+    'Value':  [tp, fp, fn,
+               round(precision_agg, 4), round(recall_agg, 4), round(f1_agg, 4)]
+})
+print("\n[Confusion Matrix — Distractor Ranker]")
+print(conf_matrix.to_string(index=False))
+
 os.makedirs('/content/drive/MyDrive/models', exist_ok=True)
 results_df.to_csv('/content/drive/MyDrive/models/distractor_results.csv', index=False)
-with open('/content/drive/MyDrive/models/distractor_model.pkl', 'wb') as f:
-    pickle.dump(ranker, f)
+conf_matrix.to_csv('/content/drive/MyDrive/models/distractor_confusion_matrix.csv', index=False)
+print("[OK] distractor_confusion_matrix.csv saved")
+import joblib
+_pkl_path = '/content/drive/MyDrive/models/distractor_model.pkl'
+joblib.dump(ranker, _pkl_path, compress=0)
+if os.path.exists(_pkl_path) and os.path.getsize(_pkl_path) > 1000:
+    print(f"[OK] distractor_model.pkl saved  ({os.path.getsize(_pkl_path)/1e6:.1f} MB)")
+else:
+    print("[ERROR] distractor_model.pkl NOT saved — check Drive mount")
+if W2V_AVAILABLE and w2v_model is not None:
+    _w2v_dir = '/content/drive/MyDrive/models'
+    os.makedirs(_w2v_dir, exist_ok=True)
+    # Full Gensim save (3 files)
+    w2v_model.save(f'{_w2v_dir}/word2vec.model')
+    # Single-file portable backup (word2vec binary format — one file only)
+    w2v_model.wv.save_word2vec_format(f'{_w2v_dir}/word2vec.bin', binary=True)
+    # Verify all files exist on Drive
+    print("\n[Word2Vec] Files saved to Drive:")
+    for _fname in [
+        'word2vec.model',
+        'word2vec.model.wv.vectors.npy',
+        'word2vec.model.syn1neg.npy',
+        'word2vec.bin',
+    ]:
+        _p = f'{_w2v_dir}/{_fname}'
+        if os.path.exists(_p):
+            print(f"  [OK] {_fname}  ({os.path.getsize(_p)/1e6:.1f} MB)")
+        else:
+            print(f"  [MISSING] {_fname}")
 print("Done. Files saved to Drive.")
+
+# ── BLEU / ROUGE / METEOR evaluation ────────────────────────────────────────
+print("\n[BLEU / ROUGE / METEOR — Distractor Generation]")
+print("="*80)
+gen_rows = []
+for _, row in val_df.head(200).iterrows():
+    if row.get('answer') not in ['A','B','C','D']:
+        continue
+    article  = str(row['article'])     if not pd.isna(row['article'])    else ''
+    correct  = str(row[row['answer']]) if not pd.isna(row[row['answer']]) else ''
+    refs     = [str(row[opt]) for opt in ['A','B','C','D']
+                if opt != row['answer'] and not pd.isna(row[opt])]
+    if not article or not refs:
+        continue
+    dists, _ = generate_distractors_ml(ranker, article, correct, top_k=3,
+                                        use_onehot=USE_ONEHOT, onehot_vectorizer=onehot_vectorizer)
+    if not dists:
+        continue
+    b_scores, r1_scores, r2_scores, rl_scores, m_scores = [], [], [], [], []
+    for gen in dists:
+        b  = max(_bleu(gen, ref)               for ref in refs)
+        r1, r2, rl = max((_rouge(gen, ref) for ref in refs), key=lambda x: x[0])
+        m  = max(_meteor(gen, ref)             for ref in refs)
+        b_scores.append(b); r1_scores.append(r1); r2_scores.append(r2)
+        rl_scores.append(rl); m_scores.append(m)
+    gen_rows.append({
+        'BLEU':    np.mean(b_scores),
+        'ROUGE-1': np.mean(r1_scores),
+        'ROUGE-2': np.mean(r2_scores),
+        'ROUGE-L': np.mean(rl_scores),
+        'METEOR':  np.mean(m_scores),
+    })
+
+gen_metric_df = pd.DataFrame(gen_rows)
+print(f"Samples: {len(gen_metric_df)}")
+print(gen_metric_df.mean().round(4).to_string())
+gen_metric_df.mean().round(4).to_frame('Score').reset_index().rename(
+    columns={'index':'Metric'}).to_csv(
+    '/content/drive/MyDrive/models/distractor_generation_metrics.csv', index=False)
+print("[OK] distractor_generation_metrics.csv saved")
 print("="*80)
