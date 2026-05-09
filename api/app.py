@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import pickle
+import joblib
 import numpy as np
 import os
 from typing import List, Optional
@@ -60,8 +61,7 @@ def load_models():
             print("[OK] ensemble_models loaded")
 
         if os.path.exists(f"{MODEL_B_TRAD}/distractor_model.pkl"):
-            with open(f"{MODEL_B_TRAD}/distractor_model.pkl", "rb") as f:
-                distractor_model = pickle.load(f)
+            distractor_model = joblib.load(f"{MODEL_B_TRAD}/distractor_model.pkl")
             print(f"[OK] distractor_model loaded — type: {type(distractor_model)}")
 
         if os.path.exists(f"{MODEL_B_TRAD}/hint_model.pkl"):
