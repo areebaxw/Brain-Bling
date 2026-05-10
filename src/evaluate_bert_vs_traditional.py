@@ -13,10 +13,10 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 
 NEURAL_PATH = "/content/drive/MyDrive/models/model_a/neural/"
 TRAD_PATH   = "/content/drive/MyDrive/models/model_a/traditional/"
-DATA_PATH   = "/content/drive/MyDrive/raw/dev.csv"
+DATA_PATH   = "/content/drive/MyDrive/data/raw/dev.csv"
 OUT_PATH    = "/content/drive/MyDrive/models/model_a/traditional/bert_vs_traditional.csv"
 
-EVAL_SAMPLES = 500  # Increase if GPU available
+EVAL_SAMPLES = 4887  # Full validation set
 
 # ── Load BERT ──────────────────────────────────────────────────────────────
 print("Loading BERT model...")
