@@ -80,7 +80,7 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
-  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null });
+  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null, unsupervised_metrics: null });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
   const [correctAnswer, setCorrectAnswer] = useState("");
@@ -97,7 +97,7 @@ export default function BrainBlingTemplate() {
   useEffect(() => {
     fetch(`${API_BASE_URL}/metrics`)
       .then((r) => r.json())
-      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [], nlg_metrics: data.nlg_metrics || null, confusion_matrices: data.confusion_matrices || null }))
+      .then((data) => setMetrics({ binary_metrics: data.binary_metrics || [], ensemble_metrics: data.ensemble_metrics || [], neural_metrics: data.neural_metrics || [], nlg_metrics: data.nlg_metrics || null, confusion_matrices: data.confusion_matrices || null, unsupervised_metrics: data.unsupervised_metrics || null }))
       .catch((error) => {
         console.error("Failed to load metrics:", error);
         setMessage("Failed to load model metrics. Please ensure the backend is running.");
@@ -771,6 +771,42 @@ export default function BrainBlingTemplate() {
                   </tbody>
                 </table>
               </div>
+
+              <h3 className="text-xl font-black mb-2">Unsupervised Learning — Clustering Metrics</h3>
+              {metrics.unsupervised_metrics && metrics.unsupervised_metrics.length > 0 ? (
+                <div className="overflow-x-auto border-2 border-black mb-6">
+                  <table className="w-full bg-[#ff8bd8] text-left text-sm">
+                    <thead className="border-b-2 border-black bg-[#bd83dd]">
+                      <tr>
+                        <th className="p-3 font-black">Model</th>
+                        <th className="p-3 font-black">Purity</th>
+                        <th className="p-3 font-black">Silhouette</th>
+                        <th className="p-3 font-black">Skewness</th>
+                        <th className="p-3 font-black">Kurtosis</th>
+                        <th className="p-3 font-black">Accuracy</th>
+                        <th className="p-3 font-black">Macro F1</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {metrics.unsupervised_metrics.map((m, i) => (
+                        <tr key={m.Model + i} className={`border-b-2 border-black ${i % 2 === 1 ? "bg-white" : ""}`}>
+                          <td className="p-3 font-bold">{m.Model}</td>
+                          <td className="p-3">{m.Purity !== '-' ? Number(m.Purity).toFixed(4) : m.Purity}</td>
+                          <td className="p-3">{m.Silhouette !== '-' ? Number(m.Silhouette).toFixed(4) : m.Silhouette}</td>
+                          <td className="p-3">{m.Skewness !== '-' ? Number(m.Skewness).toFixed(4) : m.Skewness}</td>
+                          <td className="p-3">{m.Kurtosis !== '-' ? Number(m.Kurtosis).toFixed(4) : m.Kurtosis}</td>
+                          <td className="p-3">{m.Accuracy !== '-' ? Number(m.Accuracy).toFixed(4) : m.Accuracy}</td>
+                          <td className="p-3">{m["Macro F1"] !== '-' ? Number(m["Macro F1"]).toFixed(4) : m["Macro F1"]}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="border-2 border-black bg-white p-4 mb-6 text-gray-500 font-bold">
+                  Unsupervised metrics unavailable — run model_a_unsupervised.py to generate clustering metrics with Skewness, Kurtosis, and Silhouette Score.
+                </div>
+              )}
 
               <h3 className="text-xl font-black mb-2">NLG Evaluation — BLEU / ROUGE / METEOR</h3>
               {metrics.nlg_metrics ? (
