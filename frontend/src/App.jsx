@@ -80,6 +80,8 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
+  const [hintsRevealed, setHintsRevealed] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
   const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
@@ -174,6 +176,7 @@ export default function BrainBlingTemplate() {
     }
     setSelected("");
     setChecked(false);
+    setIsLoading(true);
     setMessage("Generating quiz with distractors...");
     
     const start = performance.now();
@@ -241,6 +244,7 @@ export default function BrainBlingTemplate() {
       setScreen("quiz");
       setMessage("API unavailable. Using fallback content.");
     }
+    setIsLoading(false);
     const end = performance.now();
     const distractorTime = Math.round(end - start);
     console.log("Quiz generation time measured:", distractorTime, "ms");
@@ -447,10 +451,16 @@ export default function BrainBlingTemplate() {
                   if (!modelType) { setMessage("Please select a model first."); return; }
                   handleSubmitArticle();
                 }}
-                className="border-2 border-black px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition"
-                style={{ backgroundColor: modelType ? c.accent2 : "#d1d5db", cursor: modelType ? "pointer" : "not-allowed" }}
+                disabled={isLoading}
+                className="border-2 border-black px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition flex items-center gap-2"
+                style={{ backgroundColor: modelType && !isLoading ? c.accent2 : "#d1d5db", cursor: modelType && !isLoading ? "pointer" : "not-allowed" }}
               >
-                Submit Article
+                {isLoading ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                    Generating...
+                  </>
+                ) : "Submit Article"}
               </button>
               <button onClick={handleLoadSample} className="border-2 border-black bg-white px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
                 Load Random RACE Sample
@@ -515,6 +525,7 @@ export default function BrainBlingTemplate() {
                       hint: hintTime,
                       total: prev.verification + prev.distractor + hintTime,
                     }));
+                    setHintsRevealed(1);
                     setShowHintPopup(true);
                   }}
                   className="border-2 border-black p-2 shadow-[2px_2px_0px_#000] hover:shadow-[3px_3px_0px_#000] transition"
@@ -591,7 +602,7 @@ export default function BrainBlingTemplate() {
 
         {showHintPopup && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-            <div className="max-w-4xl w-full border-4 border-black shadow-[12px_12px_0px_#000]" style={{ backgroundColor: c.accent2 }}>
+            <div className="max-w-2xl w-full border-4 border-black shadow-[12px_12px_0px_#000]" style={{ backgroundColor: c.accent2 }}>
               <div className="flex items-center justify-between border-b-4 border-black p-4" style={{ backgroundColor: c.primary }}>
                 <div className="flex items-center gap-3">
                   <Icon name="lightbulb" />
@@ -605,31 +616,49 @@ export default function BrainBlingTemplate() {
                   Close
                 </button>
               </div>
-              <div className="p-6">
+              <div className="p-6 space-y-4">
                 {window.currentHints && window.currentHints.length > 0 ? (
-                  <div className="grid gap-4 md:grid-cols-3">
-                    {window.currentHints.map((hint, i) => (
+                  <>
+                    {window.currentHints.slice(0, hintsRevealed).map((hint, i) => (
                       <div key={i} className="border-2 border-black p-4 shadow-[4px_4px_0px_#000]" style={{ backgroundColor: i % 2 === 1 ? c.secondary : "white" }}>
-                        <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                          <span className="text-xs font-bold px-2 py-0.5 border border-black text-white" style={{ backgroundColor: c.primary }}>{["General", "Specific", "Near-Explicit"][i]}</span>
+                        </div>
                         <p>{hint}</p>
                       </div>
                     ))}
-                  </div>
+                    {hintsRevealed < (window.currentHints?.length || 3) && (
+                      <button
+                        onClick={() => setHintsRevealed(h => h + 1)}
+                        className="w-full border-2 border-black px-4 py-2 font-black shadow-[3px_3px_0px_#000] transition hover:-translate-y-0.5"
+                        style={{ backgroundColor: c.secondary }}
+                      >
+                        Show Hint {hintsRevealed + 1} of {window.currentHints?.length || 3}
+                      </button>
+                    )}
+                  </>
                 ) : (
                   <p className="text-center font-bold">No hints available. Please try generating hints again.</p>
                 )}
               </div>
-              <button
-                onClick={() => {
-                  setShowHintPopup(false);
-                  setChecked(true);
-                  setMessage(correctAnswer ? `✓ Correct answer revealed: ${correctAnswer}` : "Answer revealed!");
-                }}
-                className="mt-5 w-full border-2 border-black px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:shadow-[6px_6px_0px_#000] transition"
-                style={{ backgroundColor: c.secondary }}
-              >
-                Reveal Answer
-              </button>
+              {hintsRevealed >= (window.currentHints?.length || 3) ? (
+                <button
+                  onClick={() => {
+                    setShowHintPopup(false);
+                    setChecked(true);
+                    setMessage(correctAnswer ? `✓ Correct answer revealed: ${correctAnswer}` : "Answer revealed!");
+                  }}
+                  className="w-full border-t-2 border-black px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:shadow-[6px_6px_0px_#000] transition"
+                  style={{ backgroundColor: c.secondary }}
+                >
+                  Reveal Answer
+                </button>
+              ) : (
+                <p className="w-full border-t-2 border-black p-3 text-center text-sm font-bold" style={{ backgroundColor: "#f3f4f6" }}>
+                  View all {window.currentHints?.length || 3} hints to unlock Reveal Answer
+                </p>
+              )}
             </div>
           </div>
         )}
