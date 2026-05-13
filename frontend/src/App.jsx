@@ -80,7 +80,9 @@ export default function BrainBlingTemplate() {
   const [checked, setChecked] = useState(false);
   const [message, setMessage] = useState("Paste an article or load the sample to begin.");
   const [showHintPopup, setShowHintPopup] = useState(false);
-  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null, unsupervised_metrics: null });
+  const [hintsRevealed, setHintsRevealed] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [metrics, setMetrics] = useState({ binary_metrics: [], ensemble_metrics: [], neural_metrics: [], nlg_metrics: null, confusion_matrices: null });
   const [question, setQuestion] = useState("");
   const [options, setOptions] = useState([]);
   const [correctAnswer, setCorrectAnswer] = useState("");
@@ -93,6 +95,32 @@ export default function BrainBlingTemplate() {
   const [modelType, setModelType] = useState("");
   const [verifierResult, setVerifierResult] = useState(null);
   const [selectedCMModel, setSelectedCMModel] = useState("Logistic Regression");
+  const [theme, setTheme] = useState("multi"); // "multi" or "simple"
+
+  // Theme color mappings
+  const colors = {
+    multi: {
+      primary: "#bd83dd",      // purple
+      secondary: "#ffc736",    // yellow
+      accent: "#ff4d00",       // orange
+      accent2: "#ff8bd8",      // pink
+      background: "#7cf5d2",   // teal
+      header: "#ff4d00",       // orange
+      text: "#000",            // black
+      white: "#fff",
+    },
+    simple: {
+      primary: "#7cf5d2",      // teal
+      secondary: "#ffc736",    // yellow
+      accent: "#7cf5d2",       // teal
+      accent2: "#ffc736",      // yellow
+      background: "#ffc736",    // yellow
+      header: "#7cf5d2",       // teal
+      text: "#000",            // black
+      white: "#fff",
+    },
+  };
+  const c = colors[theme];
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/metrics`)
@@ -148,6 +176,7 @@ export default function BrainBlingTemplate() {
     }
     setSelected("");
     setChecked(false);
+    setIsLoading(true);
     setMessage("Generating quiz with distractors...");
     
     const start = performance.now();
@@ -215,6 +244,7 @@ export default function BrainBlingTemplate() {
       setScreen("quiz");
       setMessage("API unavailable. Using fallback content.");
     }
+    setIsLoading(false);
     const end = performance.now();
     const distractorTime = Math.round(end - start);
     console.log("Quiz generation time measured:", distractorTime, "ms");
@@ -282,10 +312,11 @@ export default function BrainBlingTemplate() {
 
   function Navbar() {
     return (
-      <nav className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-black bg-[#bd83dd] px-6 py-4">
+      <nav className="flex flex-wrap items-center justify-between gap-4 border-b-2 border-black px-6 py-4" style={{ backgroundColor: c.primary }}>
         <button
           onClick={() => setScreen("landing")}
-          className="border-2 border-black bg-[#ffc736] px-5 py-2 text-3xl font-black tracking-tight shadow-[4px_4px_0px_#000]"
+          className="border-2 border-black px-5 py-2 text-3xl font-black tracking-tight shadow-[4px_4px_0px_#000]"
+          style={{ backgroundColor: c.secondary }}
         >
           Brain Bling
         </button>
@@ -295,9 +326,10 @@ export default function BrainBlingTemplate() {
             <button
               key={s}
               onClick={() => setScreen(s)}
-              className={`border-2 border-black px-4 py-2 text-sm font-bold shadow-[3px_3px_0px_#000] transition ${
-                screen === s ? "bg-[#ff4d00] text-white" : "bg-white hover:bg-[#ffc736]"
-              }`}
+              className="border-2 border-black px-4 py-2 text-sm font-bold shadow-[3px_3px_0px_#000] transition"
+              style={{ backgroundColor: screen === s ? c.header : "white", color: screen === s ? "white" : "black" }}
+              onMouseEnter={(e) => screen !== s && (e.target.style.backgroundColor = c.secondary)}
+              onMouseLeave={(e) => screen !== s && (e.target.style.backgroundColor = "white")}
             >
               {stepLabels[i]}
             </button>
@@ -306,7 +338,7 @@ export default function BrainBlingTemplate() {
 
         <div className="flex border-2 border-black bg-white">
           <input className="w-40 px-3 py-2 outline-none" placeholder="Search..." />
-          <button className="border-l-2 border-black bg-[#ffc736] px-3" aria-label="Search">
+          <button className="border-l-2 border-black px-3" style={{ backgroundColor: c.secondary }} aria-label="Search">
             <Icon name="search" size={20} />
           </button>
         </div>
@@ -316,23 +348,32 @@ export default function BrainBlingTemplate() {
 
   if (screen === "landing") {
     return (
-      <div className="h-screen flex flex-col bg-[#7cf5d2] font-sans text-black overflow-hidden">
-        <div className="bg-[#ff4d00] border-b-2 border-black">
+      <div className="h-screen flex flex-col font-sans text-black overflow-hidden" style={{ backgroundColor: c.background }}>
+        <div className="border-b-2 border-black" style={{ backgroundColor: c.header }}>
           <Navbar />
         </div>
-        <div className="flex-1 flex flex-col items-center justify-center text-center relative overflow-hidden px-8 bg-[#ff4d00]">
-          <div className="absolute left-8 top-8 h-24 w-24 rotate-12 border-2 border-black bg-[#ffc736] [clip-path:polygon(50%_0%,61%_35%,98%_35%,68%_57%,79%_91%,50%_70%,21%_91%,32%_57%,2%_35%,39%_35%)]" />
-          <div className="absolute bottom-8 left-12 h-52 w-52 rounded-full border-2 border-black bg-white shadow-[inset_0_0_0_18px_#bd83dd,inset_0_0_0_36px_#fff,inset_0_0_0_54px_#bd83dd]" />
-          <p className="relative text-3xl font-black text-[#ff8bd8] [-webkit-text-stroke:1px_black]">Your AI Reading Buddy</p>
+        <div className="flex-1 flex flex-col items-center justify-center text-center relative overflow-hidden px-8" style={{ backgroundColor: c.header }}>
+          {/* Theme Toggle Button - Top Left */}
+          <button
+            onClick={() => setTheme(theme === "multi" ? "simple" : "multi")}
+            className="absolute top-4 left-4 z-50 border-2 border-black px-4 py-2 font-black shadow-[4px_4px_0px_#000] transition hover:-translate-y-0.5"
+            style={{ backgroundColor: c.primary, color: c.white }}
+          >
+            {theme === "multi" ? "🎨 Multi" : "🟣 Simple"}
+          </button>
+          <div className="absolute left-8 top-8 h-24 w-24 rotate-12 border-2 border-black [clip-path:polygon(50%_0%,61%_35%,98%_35%,68%_57%,79%_91%,50%_70%,21%_91%,32%_57%,2%_35%,39%_35%)]" style={{ backgroundColor: c.secondary }} />
+          <div className="absolute bottom-8 left-12 h-52 w-52 rounded-full border-2 border-black bg-white shadow-[inset_0_0_0_18px_#bd83dd,inset_0_0_0_36px_#fff,inset_0_0_0_54px_#bd83dd]" style={{ boxShadow: `inset 0 0 0 18px ${c.primary}, inset 0 0 0 36px #fff, inset 0 0 0 54px ${c.primary}` }} />
+          <p className="relative text-3xl font-black [-webkit-text-stroke:1px_black]" style={{ color: c.accent2 }}>Your AI Reading Buddy</p>
           <h1 className="relative mx-auto mt-3 max-w-4xl text-6xl font-black leading-none text-white drop-shadow-[7px_7px_0px_#000] md:text-8xl">
             Brain Bling
           </h1>
-          <p className="relative mx-auto mt-8 max-w-xl bg-[#ffc736] px-6 py-4 text-base font-semibold shadow-[6px_6px_0px_#000]">
+          <p className="relative mx-auto mt-8 max-w-xl px-6 py-4 text-base font-semibold shadow-[6px_6px_0px_#000]" style={{ backgroundColor: c.secondary }}>
             Generate comprehension questions, verify answers, create distractors, and reveal smart hints using ML.
           </p>
           <button
             onClick={() => setScreen("input")}
-            className="relative mt-10 inline-block rounded-full border-2 border-black bg-[#ff8bd8] px-10 py-4 text-2xl font-black shadow-[7px_7px_0px_#000] transition hover:-translate-y-1"
+            className="relative mt-10 inline-block rounded-full border-2 border-black px-10 py-4 text-2xl font-black shadow-[7px_7px_0px_#000] transition hover:-translate-y-1"
+            style={{ backgroundColor: c.accent2, color: c.white }}
           >
             Start Quiz
           </button>
@@ -343,12 +384,12 @@ export default function BrainBlingTemplate() {
 
   if (screen === "input") {
     return (
-      <div className="h-screen flex flex-col bg-[#7cf5d2] font-sans text-black overflow-hidden">
-        <div className="bg-[#ff4d00] border-b-2 border-black">
+      <div className="h-screen flex flex-col font-sans text-black overflow-hidden" style={{ backgroundColor: c.background }}>
+        <div className="border-b-2 border-black" style={{ backgroundColor: c.header }}>
           <Navbar />
         </div>
         <main className="flex-1 flex items-center justify-center overflow-y-auto p-6">
-          <section className="w-full max-w-3xl border-2 border-black bg-[#ffc736] p-8 shadow-[9px_9px_0px_#000]">
+          <section className="w-full max-w-3xl border-2 border-black p-8 shadow-[9px_9px_0px_#000]" style={{ backgroundColor: c.secondary }}>
             <div className="mb-4 flex items-center gap-3">
               <Icon name="upload" />
               <h2 className="text-3xl font-black">Step 1 - Article Input</h2>
@@ -361,8 +402,11 @@ export default function BrainBlingTemplate() {
                 <button
                   onClick={() => setModelType("bert")}
                   className={`border-2 border-black p-4 font-black shadow-[4px_4px_0px_#000] transition ${
-                    modelType === "bert" ? "bg-[#bd83dd] text-white scale-105" : "bg-white hover:bg-[#bd83dd] hover:text-white"
+                    modelType === "bert" ? "scale-105" : "hover:text-white"
                   }`}
+                  style={{ backgroundColor: modelType === "bert" ? c.primary : "white", color: modelType === "bert" ? "white" : "black" }}
+                  onMouseEnter={(e) => modelType !== "bert" && (e.target.style.backgroundColor = c.primary)}
+                  onMouseLeave={(e) => modelType !== "bert" && (e.target.style.backgroundColor = "white")}
                 >
                   <p>BERT (Neural)</p>
                   <p className="text-xs font-normal mt-1">RoBERTa fine-tuned on RACE<br/>Deep semantic understanding</p>
@@ -370,17 +414,20 @@ export default function BrainBlingTemplate() {
                 <button
                   onClick={() => setModelType("traditional")}
                   className={`border-2 border-black p-4 font-black shadow-[4px_4px_0px_#000] transition ${
-                    modelType === "traditional" ? "bg-[#7cf5d2] scale-105" : "bg-white hover:bg-[#7cf5d2]"
+                    modelType === "traditional" ? "scale-105" : ""
                   }`}
+                  style={{ backgroundColor: modelType === "traditional" ? c.background : "white", color: modelType === "traditional" ? "black" : "black" }}
+                  onMouseEnter={(e) => modelType !== "traditional" && (e.target.style.backgroundColor = c.background)}
+                  onMouseLeave={(e) => modelType !== "traditional" && (e.target.style.backgroundColor = "white")}
                 >
                   <p>Traditional (ML)</p>
                   <p className="text-xs font-normal mt-1">One-Hot + Cosine Similarity<br/>LR / SVM / Random Forest</p>
                 </button>
               </div>
               {modelType && (
-                <p className={`mt-3 text-center font-bold text-sm border-2 border-black p-2 ${
-                  modelType === "bert" ? "bg-[#bd83dd] text-white" : "bg-[#7cf5d2]"
-                }`}>
+                <p className="mt-3 text-center font-bold text-sm border-2 border-black p-2"
+                  style={{ backgroundColor: modelType === "bert" ? c.primary : c.background, color: modelType === "bert" ? "white" : "black" }}
+                >
                   Selected: {modelType === "bert" ? "BERT (Neural)" : "Traditional (ML)"} - entire quiz will use this model
                 </p>
               )}
@@ -388,21 +435,32 @@ export default function BrainBlingTemplate() {
 
             <textarea
               value={article}
-              onChange={(event) => setArticle(event.target.value)}
-              className="min-h-48 w-full border-2 border-black bg-white p-4 text-base outline-none"
-              placeholder="Paste reading passage here..."
+              onChange={(e) => setArticle(e.target.value)}
+              placeholder="Paste your article here..."
+              className="w-full h-48 border-2 border-black p-4 font-mono text-sm shadow-[4px_4px_0px_#000] focus:outline-none focus:ring-4 focus:ring-black"
             />
+            <div className="mb-5 border-2 border-black p-4" style={{ backgroundColor: c.background }}>
+              <p className="font-black mb-3">Article Stats</p>
+              <p className="text-sm font-bold">Word Count: {article.split(" ").length}</p>
+              <p className="text-sm font-bold">Character Count: {article.length}</p>
+            </div>
+
             <div className="mt-4 flex flex-wrap gap-4">
               <button
                 onClick={() => {
                   if (!modelType) { setMessage("Please select a model first."); return; }
                   handleSubmitArticle();
                 }}
-                className={`border-2 border-black px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition ${
-                  modelType ? "bg-[#ff8bd8]" : "bg-gray-300 cursor-not-allowed"
-                }`}
+                disabled={isLoading}
+                className="border-2 border-black px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition flex items-center gap-2"
+                style={{ backgroundColor: modelType && !isLoading ? c.accent2 : "#d1d5db", cursor: modelType && !isLoading ? "pointer" : "not-allowed" }}
               >
-                Submit Article
+                {isLoading ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+                    Generating...
+                  </>
+                ) : "Submit Article"}
               </button>
               <button onClick={handleLoadSample} className="border-2 border-black bg-white px-6 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
                 Load Random RACE Sample
@@ -417,8 +475,8 @@ export default function BrainBlingTemplate() {
 
   if (screen === "quiz") {
     return (
-      <div className="h-screen flex flex-col bg-[#7cf5d2] font-sans text-black overflow-hidden">
-        <div className="bg-[#ff4d00] border-b-2 border-black">
+      <div className="h-screen flex flex-col font-sans text-black overflow-hidden" style={{ backgroundColor: c.background }}>
+        <div className="border-b-2 border-black" style={{ backgroundColor: c.header }}>
           <Navbar />
         </div>
         <main className="flex-1 overflow-y-auto p-6 flex justify-center">
@@ -430,15 +488,15 @@ export default function BrainBlingTemplate() {
             </div>
 
             {article && (
-              <div className="mb-5 border-2 border-black bg-[#7cf5d2] p-4">
+              <div className="mb-5 border-2 border-black p-4" style={{ backgroundColor: c.background }}>
                 <p className="text-sm font-bold mb-1">Passage:</p>
                 <p className="text-base">{article}</p>
               </div>
             )}
 
-            <div className="border-2 border-black bg-[#bd83dd] p-5">
+            <div className="border-2 border-black p-5" style={{ backgroundColor: c.primary }}>
               <div className="flex items-center justify-between">
-                <p className="text-xl font-black">Question generated by Model A</p>
+                <p className="text-xl font-black text-white">Question generated by Model A</p>
                 <button
                   onClick={async () => {
                     const start = performance.now();
@@ -467,15 +525,17 @@ export default function BrainBlingTemplate() {
                       hint: hintTime,
                       total: prev.verification + prev.distractor + hintTime,
                     }));
+                    setHintsRevealed(1);
                     setShowHintPopup(true);
                   }}
-                  className="border-2 border-black bg-[#ffc736] p-2 shadow-[2px_2px_0px_#000] hover:shadow-[3px_3px_0px_#000] transition"
+                  className="border-2 border-black p-2 shadow-[2px_2px_0px_#000] hover:shadow-[3px_3px_0px_#000] transition"
+                  style={{ backgroundColor: c.secondary }}
                   aria-label="Show hints"
                 >
                   <Icon name="lightbulb" size={20} />
                 </button>
               </div>
-              <p className="mt-2 text-lg">{question}</p>
+              <p className="mt-2 text-lg text-white">{question}</p>
             </div>
 
             <div className="mt-5 grid gap-3 md:grid-cols-2">
@@ -487,9 +547,8 @@ export default function BrainBlingTemplate() {
                     setChecked(false);
                     setMessage(`Selected option ${option.id}. Click Check Answer.`);
                   }}
-                  className={`border-2 border-black p-4 text-left font-bold shadow-[4px_4px_0px_#000] transition hover:-translate-y-0.5 ${
-                    selected === option.id ? "bg-[#ff8bd8]" : "bg-[#ffc736]"
-                  }`}
+                  className="border-2 border-black p-4 text-left font-bold shadow-[4px_4px_0px_#000] transition hover:-translate-y-0.5"
+                  style={{ backgroundColor: selected === option.id ? c.accent2 : c.secondary }}
                 >
                   {option.id}) {option.text}
                 </button>
@@ -498,11 +557,11 @@ export default function BrainBlingTemplate() {
 
 
             <div className="mt-5 flex flex-wrap gap-4">
-              <button onClick={handleCheckAnswer} className="border-2 border-black bg-[#7cf5d2] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
+              <button onClick={handleCheckAnswer} className="border-2 border-black px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition" style={{ backgroundColor: c.background }}>
                 Check Answer
               </button>
               {checked && (
-                <button onClick={() => setScreen("dashboard")} className="border-2 border-black bg-[#ff8bd8] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition">
+                <button onClick={() => setScreen("dashboard")} className="border-2 border-black px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:-translate-y-0.5 transition" style={{ backgroundColor: c.accent2 }}>
                   View Results
                 </button>
               )}
@@ -510,9 +569,8 @@ export default function BrainBlingTemplate() {
 
             {checked && (
               <div className="mt-5 space-y-3">
-                <div className={`flex items-center gap-3 border-2 border-black p-4 text-white shadow-[4px_4px_0px_#000] ${
-                  selected === correctAnswer ? "bg-[#22c55e]" : "bg-[#ff4d00]"
-                }`}>
+                <div className="flex items-center gap-3 border-2 border-black p-4 text-white shadow-[4px_4px_0px_#000]"
+                     style={{ backgroundColor: selected === correctAnswer ? "#22c55e" : c.accent }}>
                   {selected === correctAnswer ? <Icon name="check" /> : <Icon name="x" />}
                   <p className="font-black">
                     {selected === correctAnswer ? "Correct!" : `Incorrect. Correct answer: ${correctAnswer}`}
@@ -521,18 +579,17 @@ export default function BrainBlingTemplate() {
 
                 {/* Show result for selected model only */}
                 {verifierResult && (
-                  <div className={`border-2 border-black p-4 shadow-[4px_4px_0px_#000] ${
-                    modelType === "bert" ? "bg-[#bd83dd]" : "bg-[#7cf5d2]"
-                  }`}>
-                    <p className={`font-black text-xs mb-1 ${modelType === "bert" ? "text-white" : ""}`}>
+                  <div className="border-2 border-black p-4 shadow-[4px_4px_0px_#000]"
+                       style={{ backgroundColor: modelType === "bert" ? c.primary : c.background }}>
+                    <p className="font-black text-xs mb-1" style={{ color: modelType === "bert" ? "white" : "black" }}>
                       {modelType === "bert" ? "BERT (RoBERTa-RACE) - Neural" : "Traditional (One-Hot Cosine) - ML"}
                     </p>
-                    <p className={`text-4xl font-black ${modelType === "bert" ? "text-white" : ""}`}>
+                    <p className="text-4xl font-black" style={{ color: modelType === "bert" ? "white" : "black" }}>
                       {modelType === "bert"
                         ? (verifierResult.bert_confidence != null ? `${(verifierResult.bert_confidence * 100).toFixed(1)}% confidence` : "Not loaded")
                         : (verifierResult.trad_confidence != null ? `${(verifierResult.trad_confidence * 100).toFixed(1)}% confidence` : "Not loaded")}
                     </p>
-                    <p className={`text-xs mt-1 ${modelType === "bert" ? "text-white" : ""}`}>
+                    <p className="text-xs mt-1" style={{ color: modelType === "bert" ? "white" : "black" }}>
                       {modelType === "bert" ? "Deep semantic understanding of passage" : "Word frequency cosine similarity"}
                     </p>
                   </div>
@@ -545,43 +602,63 @@ export default function BrainBlingTemplate() {
 
         {showHintPopup && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-            <div className="max-w-4xl w-full border-4 border-black bg-[#ff8bd8] shadow-[12px_12px_0px_#000]">
-              <div className="flex items-center justify-between border-b-4 border-black bg-[#bd83dd] p-4">
+            <div className="max-w-2xl w-full border-4 border-black shadow-[12px_12px_0px_#000]" style={{ backgroundColor: c.accent2 }}>
+              <div className="flex items-center justify-between border-b-4 border-black p-4" style={{ backgroundColor: c.primary }}>
                 <div className="flex items-center gap-3">
                   <Icon name="lightbulb" />
-                  <h2 className="text-2xl font-black">Hint Panel</h2>
+                  <h2 className="text-2xl font-black text-white">Hint Panel</h2>
                 </div>
                 <button
                   onClick={() => setShowHintPopup(false)}
-                  className="border-2 border-black bg-[#ff4d00] px-4 py-2 font-black text-white shadow-[3px_3px_0px_#000] hover:shadow-[4px_4px_0px_#000]"
+                  className="border-2 border-black px-4 py-2 font-black text-white shadow-[3px_3px_0px_#000] hover:shadow-[4px_4px_0px_#000]"
+                  style={{ backgroundColor: c.accent }}
                 >
                   Close
                 </button>
               </div>
-              <div className="p-6">
+              <div className="p-6 space-y-4">
                 {window.currentHints && window.currentHints.length > 0 ? (
-                  <div className="grid gap-4 md:grid-cols-3">
-                    {window.currentHints.map((hint, i) => (
-                      <div key={i} className={`border-2 border-black ${i % 2 === 1 ? "bg-[#ffc736]" : "bg-white"} p-4 shadow-[4px_4px_0px_#000]`}>
-                        <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                  <>
+                    {window.currentHints.slice(0, hintsRevealed).map((hint, i) => (
+                      <div key={i} className="border-2 border-black p-4 shadow-[4px_4px_0px_#000]" style={{ backgroundColor: i % 2 === 1 ? c.secondary : "white" }}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-xl font-black">Hint {i + 1}</h3>
+                          <span className="text-xs font-bold px-2 py-0.5 border border-black text-white" style={{ backgroundColor: c.primary }}>{["General", "Specific", "Near-Explicit"][i]}</span>
+                        </div>
                         <p>{hint}</p>
                       </div>
                     ))}
-                  </div>
+                    {hintsRevealed < (window.currentHints?.length || 3) && (
+                      <button
+                        onClick={() => setHintsRevealed(h => h + 1)}
+                        className="w-full border-2 border-black px-4 py-2 font-black shadow-[3px_3px_0px_#000] transition hover:-translate-y-0.5"
+                        style={{ backgroundColor: c.secondary }}
+                      >
+                        Show Hint {hintsRevealed + 1} of {window.currentHints?.length || 3}
+                      </button>
+                    )}
+                  </>
                 ) : (
                   <p className="text-center font-bold">No hints available. Please try generating hints again.</p>
                 )}
               </div>
-              <button
-                onClick={() => {
-                  setShowHintPopup(false);
-                  setChecked(true);
-                  setMessage(correctAnswer ? `✓ Correct answer revealed: ${correctAnswer}` : "Answer revealed!");
-                }}
-                className="mt-5 w-full border-2 border-black bg-[#ffc736] px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:shadow-[6px_6px_0px_#000] transition"
-              >
-                Reveal Answer
-              </button>
+              {hintsRevealed >= (window.currentHints?.length || 3) ? (
+                <button
+                  onClick={() => {
+                    setShowHintPopup(false);
+                    setChecked(true);
+                    setMessage(correctAnswer ? `✓ Correct answer revealed: ${correctAnswer}` : "Answer revealed!");
+                  }}
+                  className="w-full border-t-2 border-black px-8 py-3 font-black shadow-[4px_4px_0px_#000] hover:shadow-[6px_6px_0px_#000] transition"
+                  style={{ backgroundColor: c.secondary }}
+                >
+                  Reveal Answer
+                </button>
+              ) : (
+                <p className="w-full border-t-2 border-black p-3 text-center text-sm font-bold" style={{ backgroundColor: "#f3f4f6" }}>
+                  View all {window.currentHints?.length || 3} hints to unlock Reveal Answer
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -605,17 +682,17 @@ export default function BrainBlingTemplate() {
       const avg = accs.reduce((a, b) => a + b, 0) / accs.length;
       const acc = Number(current.Accuracy);
       if (acc === max)
-        return <span className="inline-block border-2 border-black bg-[#22c55e] px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]">Best</span>;
+        return <span className="inline-block border-2 border-black px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]" style={{ backgroundColor: "#22c55e" }}>Best</span>;
       if (acc >= avg)
-        return <span className="inline-block border-2 border-black bg-[#ffc736] px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]">Good</span>;
+        return <span className="inline-block border-2 border-black px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]" style={{ backgroundColor: c.secondary }}>Good</span>;
       if (acc === min)
-        return <span className="inline-block border-2 border-black bg-[#ff4d00] px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]">Weak</span>;
-      return <span className="inline-block border-2 border-black bg-[#ff8bd8] px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]">Fair</span>;
+        return <span className="inline-block border-2 border-black px-2 py-0.5 text-xs font-black text-white shadow-[2px_2px_0px_#000]" style={{ backgroundColor: c.accent }}>Weak</span>;
+      return <span className="inline-block border-2 border-black px-2 py-0.5 text-xs font-black shadow-[2px_2px_0px_#000]" style={{ backgroundColor: c.accent2 }}>Fair</span>;
     }
 
     return (
-      <div className="h-screen flex flex-col bg-[#7cf5d2] font-sans text-black overflow-hidden">
-        <div className="bg-[#ff4d00] border-b-2 border-black">
+      <div className="h-screen flex flex-col font-sans text-black overflow-hidden" style={{ backgroundColor: c.background }}>
+        <div className="border-b-2 border-black" style={{ backgroundColor: c.header }}>
           <Navbar />
         </div>
         <main className="flex-1 overflow-y-auto p-6">
@@ -644,7 +721,7 @@ export default function BrainBlingTemplate() {
                   ["Best Macro F1", bestF1],
                   ["Best ROC-AUC", bestAUC],
                 ].map(([label, value]) => (
-                  <div key={label} className="border-2 border-black bg-[#7cf5d2] p-5 text-center shadow-[4px_4px_0px_#000]">
+                  <div key={label} className="border-2 border-black p-5 text-center shadow-[4px_4px_0px_#000]" style={{ backgroundColor: c.background }}>
                     <p className="text-sm font-bold">{label}</p>
                     <p className="mt-2 text-3xl font-black">{value}</p>
                   </div>
@@ -654,12 +731,12 @@ export default function BrainBlingTemplate() {
               <h3 className="text-xl font-black mb-2">Session Inference Times</h3>
               <div className="grid gap-4 md:grid-cols-4 mb-6">
                 {[
-                  ["Verification", `${inferenceTimes.verification}ms`, "bg-[#ff8bd8]"],
-                  ["Distractor", `${inferenceTimes.distractor}ms`, "bg-[#ffc736]"],
-                  ["Hint", `${inferenceTimes.hint}ms`, "bg-[#7cf5d2]"],
-                  ["Total", `${inferenceTimes.total}ms`, "bg-[#bd83dd]"],
+                  ["Verification", `${inferenceTimes.verification}ms`, c.accent2],
+                  ["Distractor", `${inferenceTimes.distractor}ms`, c.secondary],
+                  ["Hint", `${inferenceTimes.hint}ms`, c.background],
+                  ["Total", `${inferenceTimes.total}ms`, c.primary],
                 ].map(([label, value, bgColor]) => (
-                  <div key={label} className={`border-2 border-black ${bgColor} p-5 text-center shadow-[4px_4px_0px_#000]`}>
+                  <div key={label} className="border-2 border-black p-5 text-center shadow-[4px_4px_0px_#000]" style={{ backgroundColor: bgColor }}>
                     <p className="text-sm font-black">{label}</p>
                     <p className="mt-2 text-3xl font-black">{value}</p>
                   </div>
@@ -668,8 +745,8 @@ export default function BrainBlingTemplate() {
 
               <h3 className="text-xl font-black mb-2">Base Models</h3>
               <div className="overflow-x-auto border-2 border-black mb-6">
-                <table className="w-full bg-[#ffc736] text-left text-sm">
-                  <thead className="border-b-2 border-black bg-[#bd83dd]">
+                <table className="w-full text-left text-sm" style={{ backgroundColor: c.secondary }}>
+                  <thead className="border-b-2 border-black" style={{ backgroundColor: c.primary }}>
                     <tr>
                       <th className="p-3 font-black">Model</th>
                       <th className="p-3 font-black">Accuracy</th>
